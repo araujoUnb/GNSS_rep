@@ -44,3 +44,32 @@ def ca_code(n):
 
 
 
+def frequecy_domain_CA(B,T,SAT):
+
+    # B  -> Bandwidth
+    # T  -> frame period
+    # SAT -> ID
+
+    N = 2 * B * T  # number of samples per frame
+    f0 = 2 * B / N # basis frequency
+    samples = f0 * (np.linspace(0, int(N) - 1, int(N)) - (N / 2 - 1 / 2))
+
+    satcode = ca_code(SAT)
+    ca_code_length = satcode.size
+
+    number_of_sequeces = int(N / ca_code_length)
+    CA_fft = number_of_sequeces * np.kron(np.ones(number_of_sequeces), np.fft.fft(satcode))
+
+    # Autocorrelation function
+    Ra_code = np.zeros(satcode.size)
+    for ii in range(ca_code_length):
+        sat_shift = np.roll(satcode, ii)
+        Ra_code[ii] = sat_shift @ satcode / ca_code_length
+
+    # Fourier transmform to obtain Power spetracl density of the sequence
+
+    CA_SPEC = np.fft.fftshift(number_of_sequeces * np.kron(np.ones(number_of_sequeces), np.fft.fft(Ra_code)))
+
+    return CA_fft, CA_SPEC
+
+
