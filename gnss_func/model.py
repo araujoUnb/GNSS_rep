@@ -2,9 +2,11 @@ import numpy as np
 import tensorly as tl
 from gnss_func.gnss_function import frequecy_domain_CA, correlator_bank_Q
 from gnss_func.array import array_lin
+from gnss_func.utils import normalise_columns
 import pandas as pd
-
+from sklearn.decomposition import TruncatedSVD
 import sys
+
 sys.path.extend(['/Users/araujo/Documents/GitHub/GNSS_rep'])
 
 from os import path
@@ -12,7 +14,8 @@ from os import path
 
 class single_polarization():
 
-    def __init__(self, nAntennas, B, T, Tc, delayGranularity, tau_vec, theta_deg_vec, number_of_epochs, IDsat):
+    def __init__(self, nAntennas, B, T, Tc, delayGranularity, tau_vec, theta_deg_vec, number_of_epochs, IDsat,
+                 correlatorType='Qw'):
 
         self.tau_vec = tau_vec
         self.theta_deg_vec = theta_deg_vec
@@ -23,29 +26,51 @@ class single_polarization():
         self.chip_period = Tc
         self.nAntennas = nAntennas
         self.delayGranularity = delayGranularity
-
+        self.correlatorType = correlatorType
 
         self.CA_FFT = None
         self.CA_PSD = None
+        self.tx_power = None
+        self.Rnoise = None
 
         self.Q = None
+        self.Qw = None
         self.C = None
         self.CQ = None
+        self.Lnoise = None
 
         self.B = None
 
         self.S = None
-        
-        
+
         self.create_output_correlator()
+        self.cov_matrix_noise_mode_2()
 
     def bank_delay(self):
-        return np.linspace(-self.chip_period,self.chip_period,self.delayGranularity)
+        return np.linspace(-self.chip_period, self.chip_period, 2*self.delayGranularity)
+
     def code_path(self):
-        return '/Users/araujo/Documents/GitHub/GNSS_rep/CACODE/CA_FFT_ ' + str(self.ID) + '_' + str(self.bandwidth) + '.pkl'
+        return '/Users/araujo/Documents/GitHub/GNSS_rep/CACODE/CA_FFT_ ' + str(self.ID) + '_' + str(
+            self.bandwidth) + '.pkl'
 
     def number_of_paths(self):
         return self.tau_vec.size
+
+    def cov_matrix_noise_mode_2(self):
+        if self.correlatorType == 'Q':
+            self.Rnoise = np.conj(self.Q.T) @ self.Q
+        elif self.correlatorType == 'Qw':
+            self.Rnoise = np.conj(self.Qw.T) @ self.Qw
+
+        self.Lnoise = np.linalg.cholesky(self.Rnoise)
+
+    def calc_snr_pre(self, C_N_dB):
+        return C_N_dB - 10 * np.log10(2 * self.bandwidth)
+
+    def noise_var(self, C_N_dB):
+        SNR_dB = self.calc_snr_pre(C_N_dB)
+        snr = 10 ** (SNR_dB / 10)
+        return self.tx_power / snr
 
     def create_output_correlator(self):
         BANK_delay = self.bank_delay()
@@ -58,8 +83,17 @@ class single_polarization():
             self.CA_FFT = code_df['CA_FFT']
             self.CA_PSD = code_df['CA_SPEC']
 
-        self.Q, self.C, self.CQ = correlator_bank_Q(self.bandwidth, self.chip_period, self.time_period,
-                                                    BANK_delay, self.tau_vec, self.CA_FFT)
+        self.Q, self.C, self.CQ, self.tx_power = correlator_bank_Q(self.bandwidth, self.chip_period, self.time_period,
+                                                                   BANK_delay, self.tau_vec, self.CA_FFT)
+
+        if self.correlatorType == 'Qw':
+            self.create_Qw()
+            self.CQ = self.C.T @ self.Qw
+
+    def create_Qw(self,n=7):
+        svd = TruncatedSVD(n_components=n, n_iter=7, random_state=59, algorithm='arpack')
+        svd.fit(self.Q)
+        self.Qw = normalise_columns(svd.fit_transform(self.Q))
 
     def channel_taps(self):
         n_epochs = self.number_of_epochs
@@ -75,15 +109,24 @@ class single_polarization():
         self.channel_taps()
         self.array()
 
-        S0 = self.B @ tl.tenalg.khatri_rao([self.C, self.A]).T
+        S0 = self.B @ tl.tenalg.khatri_rao([self.CQ.T, self.A]).T
 
         # Tx-tensor
-        self.S = tl.tensor(S0.reshape(self.number_of_epochs, int(self.C.size / self.number_of_paths()), self.nAntennas))
+        self.S = tl.tensor(
+            S0.reshape(self.number_of_epochs, int(self.CQ.size / self.number_of_paths()), self.nAntennas))
 
-    def rx_signal(self, SNR_dB):
-        snr = 10 ** (SNR_dB / 10)
+    def create_Noise(self, sigma, a, b, c):
+
+        N2 = 1 / np.sqrt(2 * sigma) * (np.random.randn(b, a * c) + 1j * np.random.randn(b, a * c))
+        N2 = self.Lnoise @ N2
+
+        return tl.tensor(N2.reshape(a, b, c))
+
+    def rx_signal(self, C_N_dB):
+
+        sigma = self.noise_var(C_N_dB)
         self.create_signal()
 
         a, b, c = self.S.shape
-        N = tl.tensor(1 / np.sqrt(2 * snr) * (np.random.randn(a, b, c) + 1j * np.random.randn(a, b, c)))
-        self.rSignal = tl.tenalg.mode_dot(self.S, self.Q.T, mode=1) + tl.tenalg.mode_dot(N, self.Q.T, mode=1)
+
+        self.rSignal = self.S + self.create_Noise(sigma, a, b, c)

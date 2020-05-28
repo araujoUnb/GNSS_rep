@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+
 import sys
 
 sys.path.extend(['/Users/araujo/Documents/GitHub/GNSS_rep'])
@@ -41,13 +42,29 @@ def ca_code(n):
     return g
 
 
+def create_matrix_C(B, Tc, T, delay, CA_FFT):
+    N = 2 * B * T  # number of samples per frame
+    f0 = 2 * B / N  # basis frequency
+    samples = f0 * (np.linspace(0, int(N) - 1, int(N)) - (N / 2 - 1 / 2))
+
+    PULSE_FFT = np.fft.fftshift(np.sqrt(Tc * np.sinc(samples * Tc) ** 2))  # GPS C/A code rectangular pulse
+
+    T_C = np.fft.fftshift(np.exp(-1j * 2 * np.pi * np.outer(samples, delay)), 0)
+
+    Xc = np.outer(PULSE_FFT * CA_FFT, np.ones(delay.size))
+
+    C = np.real(np.fft.ifft(T_C * Xc))
+    C = np.fft.fftshift(C, 0)
+    C = np.sqrt(N) * C / np.linalg.norm(C[:, 0])
+    return C
+
 def correlator_bank_Q(B, Tc, T, BANK_delay, delay, CA_FFT):
     N = 2 * B * T  # number of samples per frame
     f0 = 2 * B / N  # basis frequency
     samples = f0 * (np.linspace(0, int(N) - 1, int(N)) - (N / 2 - 1 / 2))
 
     #PULSE_SPEC = np.fft.fftshift(Tc * np.sinc(samples * Tc) ** 2)  # GPS C/A code rectangular pulse
-    PULSE_FFT = np.fft.fftshift(np.sqrt(Tc) * np.sinc(samples * Tc) ** 2)  # GPS C/A code rectangular pulse
+    PULSE_FFT = np.fft.fftshift(np.sqrt(Tc * np.sinc(samples * Tc) ** 2))  # GPS C/A code rectangular pulse
 
     T_Q = np.fft.fftshift(np.exp(-1j * 2 * np.pi * np.kron(samples.reshape(samples.size, 1), BANK_delay.T)), 0)
 
@@ -60,11 +77,13 @@ def correlator_bank_Q(B, Tc, T, BANK_delay, delay, CA_FFT):
     T_C = np.fft.fftshift(np.exp(-1j * 2 * np.pi * np.outer(samples, delay)), 0)
 
     Xc = np.outer(PULSE_FFT * CA_FFT, np.ones(delay.size))
+    tx_power = np.trapz(np.abs(Xc[:,0])**2,dx=T/N)/T
+
     C = np.real(np.fft.ifft(T_C * Xc))
     C = np.fft.fftshift(C, 0)
     C = np.sqrt(N) * C / np.linalg.norm(C[:, 0])
 
-    return Q, C, C.T @ Q,
+    return Q, C, C.T @ Q, tx_power
 
 
 def frequecy_domain_CA(B, T, SAT):
