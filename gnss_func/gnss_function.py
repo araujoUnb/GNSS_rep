@@ -46,7 +46,7 @@ def correlator_bank_Q(B, Tc, T, BANK_delay, delay, CA_FFT):
     f0 = 2 * B / N  # basis frequency
     samples = f0 * (np.linspace(0, int(N) - 1, int(N)) - (N / 2 - 1 / 2))
 
-    PULSE_SPEC = np.fft.fftshift(Tc * np.sinc(samples * Tc) ** 2)  # GPS C/A code rectangular pulse
+    #PULSE_SPEC = np.fft.fftshift(Tc * np.sinc(samples * Tc) ** 2)  # GPS C/A code rectangular pulse
     PULSE_FFT = np.fft.fftshift(np.sqrt(Tc) * np.sinc(samples * Tc) ** 2)  # GPS C/A code rectangular pulse
 
     T_Q = np.fft.fftshift(np.exp(-1j * 2 * np.pi * np.kron(samples.reshape(samples.size, 1), BANK_delay.T)), 0)
@@ -64,7 +64,7 @@ def correlator_bank_Q(B, Tc, T, BANK_delay, delay, CA_FFT):
     C = np.fft.fftshift(C, 0)
     C = np.sqrt(N) * C / np.linalg.norm(C[:, 0])
 
-    return Q, C, C @ Q,
+    return Q, C, C.T @ Q,
 
 
 def frequecy_domain_CA(B, T, SAT):
