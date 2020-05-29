@@ -68,7 +68,8 @@ class single_polarization():
         return C_N_dB - 10 * np.log10(2 * self.bandwidth)
 
     def noise_var(self, C_N_dB):
-        SNR_dB = self.calc_snr_pre(C_N_dB)
+        SNR_dB_pre = self.calc_snr_pre(C_N_dB)
+        SNR_dB = SNR_dB_pre + 10*np.log10(self.bandwidth*self.time_period)
         snr = 10 ** (SNR_dB / 10)
         return self.tx_power / snr
 
