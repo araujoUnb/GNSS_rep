@@ -56,7 +56,7 @@ class gaussian:
 def MM_BSL(B, Y, a_gamma, b_gamma, c_noise, d_noise, n_max=50):
     # multiple measurements - bayesian sparse optimization
 
-    N, M = Y.shape
+    row, col = Y.shape
 
     # N -> number of samples per vector measurement
     # NM -> number of vector measurements
@@ -66,31 +66,28 @@ def MM_BSL(B, Y, a_gamma, b_gamma, c_noise, d_noise, n_max=50):
 
     a = np.random.randn(K)
     g = np.zeros(K)
-    mu = np.ones(K, dtype=complex)
+    M = np.ones((K,col), dtype=complex)
 
     beta = 1
     error = 10
+    n_iter =0
 
-    for mm in range(M):
-        n_iter = 0
-        while (error >= 1e-5) & (n_iter < n_max):
-            mu_old = mu
-            A = np.diag(a)
+    while (error >= 1e-5) & (n_iter < n_max):
+        M_old = M
+        A = np.diag(a)
 
-            y = Y[:,mm]
+        SIGMA = np.linalg.pinv(A + beta * B.conj().T @ B)
+        M = beta * SIGMA @ B.conj().T @ Y
+        for kk in range(K):
+            a[kk] = (1 + 2 * a_gamma) / (np.abs(M[kk,kk]) ** 2 + np.abs(SIGMA[kk, kk]) + 2 * b_gamma)
+            g[kk] = 1 - a[kk] * np.abs(SIGMA[kk, kk])
 
-            SIGMA = np.linalg.pinv(A + np.mean(beta) * B.conj().T @ B)
-            mu = np.mean(beta) * SIGMA @ B.conj().T @ y
-            for kk in range(K):
-                a[kk] = (1 + 2 * a_gamma) / (np.abs(mu[kk]) ** 2 + np.abs(SIGMA[kk, kk]) + 2 * b_gamma)
-                g[kk] = 1 - a[kk] * np.abs(SIGMA[kk, kk])
+        beta = (row - np.sum(g) + 2 * c_noise) / (
+                            np.linalg.norm(Y - B @ M,'fro') ** 2 + 2 * d_noise)
+        error = np.linalg.norm(M_old - M,'fro')
+        n_iter = n_iter + 1
 
-            beta = (N - np.linalg.norm(g) + 2 * c_noise) / (
-                            np.linalg.norm(y - B @ mu) ** 2 + 2 * d_noise)
-            error = np.linalg.norm(mu_old - mu)
-            n_iter = n_iter + 1
-
-    return mu, 1 / np.mean(beta), error
+    return M, 1 / np.mean(beta), error
 
 
 def EM_linearRegression(B, y, a_gamma, b_gamma, c_noise, d_noise, n_max=100):
