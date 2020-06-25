@@ -5,7 +5,7 @@ from gnss_func.estimators import singlePolModel_estimator
 
 from os import path
 
-MC = 20
+MC = 60
 #%%
 
 nAntennas = 8
@@ -21,7 +21,7 @@ delayGranularity = 11
 nColumns = 11
 factor = np.linspace(0,1,nColumns)
 
-Folder = 'deltaTau/'
+Folder = 'deltaTau_angle/'
 CN = 48
 
 
@@ -53,7 +53,7 @@ for ii in range(nColumns):
             gnss_model.rx_signal(CN)
 
             estimator_model = singlePolModel_estimator(gnss_model, delayGranularity, theta_deg_space)
-            rmse = estimator_model.rmse(tau_los)
+            rmse = estimator_model.rmse_angle(tau_los)
 
             results_dic = {'rmse':[rmse],
                            'tau_los':[tau_los],
