@@ -7,40 +7,95 @@ import sys
 sys.path.extend(['/Users/araujo/Documents/GitHub/GNSS_rep'])
 
 
-def ca_code(n):
-    # returns the Gold code for GPS satellite ID n
-    # n=1...32
-    # the code is represented at levels : -1 for bit 0
-    #                                     1 for bit 1
+def shift(register, feedback, output):
+    """GPS Shift Register
 
-    # phase assignments
-    phase = np.array([[2, 6], [3, 7], [4, 8], [5, 9], [1, 9], [2, 10], [1, 9], [2, 9],
-                      [3, 10], [2, 3], [3, 4], [5, 6], [6, 7], [7, 8], [8, 9], [9, 10],
-                      [1, 4], [2, 5], [3, 6], [4, 7], [5, 8], [6, 9], [1, 3], [4, 6],
-                      [5, 7], [6, 8], [7, 9], [8, 10], [1, 6], [2, 7], [3, 8], [4, 9]]).astype(int)
+    :param list feedback: which positions to use as feedback (1 indexed)
+    :param list output: which positions are output (1 indexed)
+    :returns output of shift register:
 
-    g = np.zeros(1023)
-    g0 = -1 * np.ones(10)
-    g1 = g0
+    """
 
-    # select taps for G2 delay
-    s0 = phase[n, 0].item() - 1
-    s1 = phase[n, 1].item() - 1
+    # calculate output
+    out = [register[i - 1] for i in output]
+    if len(out) > 1:
+        out = sum(out) % 2
+    else:
+        out = out[0]
 
-    for ii in range(1023):
-        # Gold code
-        g[ii] = g1[s0] * g1[s1] * g0[9]
-        # generator 1 - shift reg1
-        tmp = g0[0]
-        g0[0] = g0[2] * g0[9]
-        g0[1:10] = np.block([tmp, g0[1:9]])
-        # generator 2 - shift reg2
-        tmp = g1[0]
-        g1[0] = g1[1] * g1[2] * g1[5] * g1[7] * g1[8] * g1[9]
-        g1[1:10] = np.block([tmp, g1[1:9]])
+    # modulo 2 add feedback
+    fb = sum([register[i - 1] for i in feedback]) % 2
 
-    return g
+    # shift to the right
+    for i in reversed(range(len(register[1:]))):
+        register[i + 1] = register[i]
 
+    # put feedback in position 1
+    register[0] = fb
+
+    return out
+
+
+
+def PRN(sv):
+    """Build the CA code (PRN) for a given satellite ID
+
+    :param int sv: satellite code (1-32)
+    :returns list: ca code for chosen satellite
+
+    """
+
+    SV = {
+        1: [2, 6],
+        2: [3, 7],
+        3: [4, 8],
+        4: [5, 9],
+        5: [1, 9],
+        6: [2, 10],
+        7: [1, 8],
+        8: [2, 9],
+        9: [3, 10],
+        10: [2, 3],
+        11: [3, 4],
+        12: [5, 6],
+        13: [6, 7],
+        14: [7, 8],
+        15: [8, 9],
+        16: [9, 10],
+        17: [1, 4],
+        18: [2, 5],
+        19: [3, 6],
+        20: [4, 7],
+        21: [5, 8],
+        22: [6, 9],
+        23: [1, 3],
+        24: [4, 6],
+        25: [5, 7],
+        26: [6, 8],
+        27: [7, 9],
+        28: [8, 10],
+        29: [1, 6],
+        30: [2, 7],
+        31: [3, 8],
+        32: [4, 9],
+    }
+
+    # init registers
+    G1 = [1 for i in range(10)]
+    G2 = [1 for i in range(10)]
+
+    ca = []  # stuff output in here
+
+    # create sequence
+    for i in range(1023):
+        g1 = shift(G1, [3, 10], [10])
+        g2 = shift(G2, [2, 3, 6, 8, 9, 10], SV[sv])  # <- sat chosen here from table
+
+        # modulo 2 add and append to the code
+        ca.append((g1 + g2) % 2)
+
+    # return C/A code!
+    return -np.sign(np.array(ca) - 0.5)
 
 def create_matrix_C(B, Tc, T, delay, CA_FFT):
     N = 2 * B * T  # number of samples per frame
@@ -95,7 +150,7 @@ def frequecy_domain_CA(B, T, SAT):
     # f0 = 2 * B / N # basis frequency
     # samples = f0 * (np.linspace(0, int(N) - 1, int(N)) - (N / 2 - 1 / 2))
 
-    satcode = ca_code(SAT)
+    satcode = PRN(SAT)
     ca_code_length = satcode.size
 
     number_of_sequeces = int(N / ca_code_length)
@@ -104,7 +159,7 @@ def frequecy_domain_CA(B, T, SAT):
     # Autocorrelation function
     Ra_code = np.zeros(satcode.size)
     for ii in range(ca_code_length):
-        sat_shift = np.roll(satcode, ii)
+        sat_shift = np.roll(satcode, -ii)
         Ra_code[ii] = sat_shift @ satcode / ca_code_length
 
     # Fourier transmform to obtain Power spetracl density of the sequence

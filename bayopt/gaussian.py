@@ -53,7 +53,7 @@ class gaussian:
         return theta_mean, sigma
 
 
-def MM_BSL(B, Y, a_gamma, b_gamma, c_noise, d_noise, n_max=50):
+def eMM_BSL(B, Y, a_gamma, b_gamma, c_noise, d_noise, n_max=50):
     # multiple measurements - bayesian sparse optimization
 
     row, col = Y.shape
@@ -78,13 +78,14 @@ def MM_BSL(B, Y, a_gamma, b_gamma, c_noise, d_noise, n_max=50):
 
         SIGMA = np.linalg.pinv(A + beta * B.conj().T @ B)
         M = beta * SIGMA @ B.conj().T @ Y
+
         for kk in range(K):
             a[kk] = (1 + 2 * a_gamma) / (np.abs(M[kk,kk]) ** 2 + np.abs(SIGMA[kk, kk]) + 2 * b_gamma)
             g[kk] = 1 - a[kk] * np.abs(SIGMA[kk, kk])
 
         beta = (row - np.sum(g) + 2 * c_noise) / (
                             np.linalg.norm(Y - B @ M,'fro') ** 2 + 2 * d_noise)
-        error = np.linalg.norm(M_old - M,'fro')
+        error = np.linalg.norm(Y - B @ M,'fro')
         n_iter = n_iter + 1
 
     return M, 1 / np.mean(beta), error
