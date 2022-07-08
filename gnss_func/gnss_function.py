@@ -1,10 +1,15 @@
 import numpy as np
 import pandas as pd
 
+from os.path import exists
 
-import sys
+from zmq import ZAP_DOMAIN
+import matplotlib.pyplot as plt 
 
-sys.path.extend(['/Users/araujo/Documents/GitHub/GNSS_rep'])
+
+#import sys
+
+#sys.path.extend(['/Users/araujo/Documents/GitHub/GNSS_rep'])
 
 
 def shift(register, feedback, output):
@@ -112,65 +117,120 @@ def create_matrix_C(B, Tc, T, delay, CA_FFT):
     C = np.fft.fftshift(C, 0)
     C = np.sqrt(N) * C / np.linalg.norm(C[:, 0])
     return C
+    
 
-def correlator_bank_Q(B, Tc, T, BANK_delay, delay, CA_FFT):
+def gen_delayed_signal(B,T,Tc,CA_FFT,delay):
+
     N = 2 * B * T  # number of samples per frame
     f0 = 2 * B / N  # basis frequency
     samples = f0 * (np.linspace(0, int(N) - 1, int(N)) - (N / 2 - 1 / 2))
 
-    #PULSE_SPEC = np.fft.fftshift(Tc * np.sinc(samples * Tc) ** 2)  # GPS C/A code rectangular pulse
-    PULSE_FFT = np.fft.fftshift(np.sqrt(Tc * np.sinc(samples * Tc) ** 2))  # GPS C/A code rectangular pulse
+    PULSE_SPEC = np.fft.fftshift(Tc * np.sinc(samples * Tc) ** 2)  # GPS C/A code rectangular pulse
+    PULSE_FFT = np.fft.fftshift(np.sqrt(Tc) * np.sinc(samples * Tc) ** 2)  # GPS C/A code rectangular pulse
 
-    T_Q = np.fft.fftshift(np.exp(-1j * 2 * np.pi * np.kron(samples.reshape(samples.size, 1), BANK_delay.T)), 0)
+    #SIGNAL_SPEC = PULSE_SPEC * CA_SPEC
+
+    T_Q = np.fft.fftshift(np.exp(-1j * 2 * np.pi * np.kron(samples.reshape(samples.size, 1), delay.T)), 0)
+
+    # Back to time domain
+    X = np.outer(PULSE_FFT * CA_FFT, np.ones(delay.size))
+
+    Q = np.fft.ifft(T_Q * X)
+
+    return np.sum(Q,axis=1)
+
+
+def correlator_bank_Q(B, Tc, T, BANK_delay, delay, CA_FFT):
+    N = 2 * B * T  # number of samples per frame
+    f0 = 2 * B / N  # basis frequency
+    samples = f0 * (np.linspace(0, int(N) - 1, int(N)) - (N / 2))
+
+    PULSE_SPEC = np.fft.fftshift(Tc * np.sinc(samples * Tc) ** 2)  # GPS C/A code rectangular pulse
+    PULSE_FFT = np.fft.fftshift(np.sqrt(Tc) * np.sinc(samples * Tc) ** 2)  # GPS C/A code rectangular pulse
+
+    #SIGNAL_SPEC = PULSE_SPEC * CA_SPEC
+
+    T_Q = np.exp(-1j * 2 * np.pi * np.outer(samples,BANK_delay))
+    T_Q = np.fft.fftshift(T_Q, 0)
 
     # Back to time domain
     X = np.outer(PULSE_FFT * CA_FFT, np.ones(BANK_delay.size))
-    Q = np.real(np.fft.ifft(T_Q * X))
-    Q = np.fft.fftshift(Q, 0)
+    Q = np.fft.ifft(T_Q * X,len(samples),0)
+    #Q = np.fft.fftshift(Q, 0)
     Q = np.sqrt(N) * Q / np.linalg.norm(Q[:, 0])
 
-    T_C = np.fft.fftshift(np.exp(-1j * 2 * np.pi * np.outer(samples, delay)), 0)
+   
+
+    T_C = np.exp(-1j * 2 * np.pi * np.outer(samples,delay))
+    T_C = np.fft.fftshift(T_C, 0)
 
     Xc = np.outer(PULSE_FFT * CA_FFT, np.ones(delay.size))
-    tx_power = np.trapz(np.abs(Xc[:,0])**2,dx=T/N)/T
+    #tx_power = np.trapz(np.abs(Xc[:,0])**2,dx=T/N)/T
 
-    C = np.real(np.fft.ifft(T_C * Xc))
-    C = np.fft.fftshift(C, 0)
+    C = np.fft.ifft(T_C * Xc,len(samples),0)
+    #C = np.fft.fftshift(C, 0)
     C = np.sqrt(N) * C / np.linalg.norm(C[:, 0])
+   
+    #plt.plot(np.fft.ifft(PULSE_FFT * CA_FFT),'b')
+    #plt.plot(C[:,0],'r--')
+    #plt.show()
+    CQ = np.conj(Q).T @ C
 
-    return Q, C, C.T @ Q, tx_power
+
+    U,S,Vh = np.linalg.svd(Q,0)
+    Qw = U
+    OMEGA = np.diag(S)@Vh
+
+    CQw = np.conj(Qw).T @ C
+
+    return CQ,Q,CQw,Qw,OMEGA
+
+    
 
 
-def frequecy_domain_CA(B, T, SAT):
-    # B  -> Bandwidth
-    # T  -> frame period
-    # SAT -> ID
+def  frequecy_domain_CA(B, T, SAT):
+    
+    Folder = 'C:\\Users\\danie\\Git\\GNSS_Artigo\\CACODE' + str(SAT) + '_' + str(B) + '.pkl'
 
-    N = 2 * B * T  # number of samples per frame
-    # f0 = 2 * B / N # basis frequency
-    # samples = f0 * (np.linspace(0, int(N) - 1, int(N)) - (N / 2 - 1 / 2))
+    if exists(Folder) :
 
-    satcode = PRN(SAT)
-    ca_code_length = satcode.size
+        objects = pd.read_pickle(Folder)
 
-    number_of_sequeces = int(N / ca_code_length)
-    CA_fft = number_of_sequeces * np.kron(np.ones(number_of_sequeces), np.fft.fft(satcode))
+        CA_fft = objects['CA_FFT']
+        CA_SPEC = objects['CA_SPEC']
 
-    # Autocorrelation function
-    Ra_code = np.zeros(satcode.size)
-    for ii in range(ca_code_length):
-        sat_shift = np.roll(satcode, -ii)
-        Ra_code[ii] = sat_shift @ satcode / ca_code_length
+        return CA_fft, CA_SPEC
+    else:
 
-    # Fourier transmform to obtain Power spetracl density of the sequence
+        # B  -> Bandwidth
+        # T  -> frame period
+        # SAT -> ID
 
-    CA_SPEC = np.fft.fftshift(number_of_sequeces * np.kron(np.ones(number_of_sequeces), np.fft.fft(Ra_code)))
+        N = 2 * B * T  # number of samples per frame
+        # f0 = 2 * B / N # basis frequency
+        # samples = f0 * (np.linspace(0, int(N) - 1, int(N)) - (N / 2 - 1 / 2))
 
-    code = {'CA_FFT': CA_fft,
-            'CA_SPEC': CA_SPEC}
+        satcode = PRN(SAT)
+        ca_code_length = satcode.size
 
-    code_df = pd.DataFrame(data=code)
-    Folder = '/Users/araujo/Documents/GitHub/GNSS_rep/CACODE/CA_FFT_' + str(SAT) + '_' + str(B) + '.pkl'
-    code_df.to_pickle(Folder)
+        number_of_sequeces = int(N / ca_code_length)
+        CA_fft = number_of_sequeces * np.kron(np.ones(number_of_sequeces), np.fft.fft(satcode))
+
+        # Autocorrelation function
+        Ra_code = np.zeros(satcode.size)
+        for ii in range(ca_code_length):
+            sat_shift = np.roll(satcode, -ii)
+            Ra_code[ii] = sat_shift @ satcode / ca_code_length
+
+        # Fourier transmform to obtain Power spetracl density of the sequence
+
+        CA_SPEC = np.fft.fftshift(number_of_sequeces * np.kron(np.ones(number_of_sequeces), np.fft.fft(Ra_code)))
+
+        code = {'CA_FFT': CA_fft,
+                'CA_SPEC': CA_SPEC}
+
+        code_df = pd.DataFrame(data=code)
+        Folder = 'C:\\Users\\danie\\Git\\GNSS_Artigo\\CACODE' + str(SAT) + '_' + str(B) + '.pkl'
+        code_df.to_pickle(Folder)
 
     return CA_fft, CA_SPEC
