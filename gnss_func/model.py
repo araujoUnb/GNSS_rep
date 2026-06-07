@@ -1,13 +1,14 @@
 import numpy as np
 import tensorly as tl
-from gnss_func.gnss_function import frequecy_domain_CA, correlator_bank_Q
+from gnss_func.gnss_function import (
+    frequecy_domain_CA,
+    correlator_bank_Q,
+    cacode_cache_path,
+)
 from gnss_func.array import array_lin
 from gnss_func.utils import normalise_columns
 import pandas as pd
 from sklearn.decomposition import TruncatedSVD
-import sys
-
-sys.path.extend(['/Users/araujo/Documents/GitHub/GNSS_rep'])
 
 from os import path
 
@@ -50,8 +51,7 @@ class single_polarization():
         return np.linspace(-self.chip_period, self.chip_period, 2*self.delayGranularity)
 
     def code_path(self):
-        return '/Users/araujo/Documents/GitHub/GNSS_rep/CACODE/CA_FFT_ ' + str(self.ID) + '_' + str(
-            self.bandwidth) + '.pkl'
+        return cacode_cache_path(self.ID, self.bandwidth)
 
     def number_of_paths(self):
         return self.tau_vec.size
@@ -91,10 +91,14 @@ class single_polarization():
             self.create_Qw()
             self.CQ = self.C.T @ self.Qw
 
-    def create_Qw(self,n=7):
-        svd = TruncatedSVD(n_components=n, n_iter=7, random_state=59, algorithm='arpack')
-        svd.fit(self.Q)
-        self.Qw = normalise_columns(svd.fit_transform(self.Q))
+    def create_Qw(self, n=7):
+        # Top-n left singular vectors of Q (the noise/correlator subspace basis).
+        # sklearn's TruncatedSVD does not accept complex input in recent versions,
+        # so we use a complex-safe economy SVD. This reproduces the previous
+        # behaviour: TruncatedSVD.fit_transform returns U*S, and normalise_columns
+        # then rescales each column to unit norm, i.e. the left singular vectors.
+        U, _, _ = np.linalg.svd(self.Q, full_matrices=False)
+        self.Qw = normalise_columns(U[:, :n])
 
     def channel_taps(self):
         n_epochs = self.number_of_epochs

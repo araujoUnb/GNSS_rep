@@ -1,15 +1,19 @@
 import numpy as np
 import pandas as pd
 
+import os
 from os.path import exists
 
-from zmq import ZAP_DOMAIN
-import matplotlib.pyplot as plt 
+
+# Repository-relative cache directory for the pre-computed C/A code spectra.
+# Replaces the previous hard-coded Windows/macOS absolute paths.
+CACODE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "CACODE"
+)
 
 
-#import sys
-
-#sys.path.extend(['/Users/araujo/Documents/GitHub/GNSS_rep'])
+def cacode_cache_path(SAT, B):
+    return os.path.join(CACODE_DIR, "CA_FFT_" + str(SAT) + "_" + str(B) + ".pkl")
 
 
 def shift(register, feedback, output):
@@ -165,32 +169,75 @@ def correlator_bank_Q(B, Tc, T, BANK_delay, delay, CA_FFT):
     T_C = np.fft.fftshift(T_C, 0)
 
     Xc = np.outer(PULSE_FFT * CA_FFT, np.ones(delay.size))
-    #tx_power = np.trapz(np.abs(Xc[:,0])**2,dx=T/N)/T
+    # transmit power (Parseval-based), restored to match single_polarization model.
+    # np.trapezoid (numpy>=2) replaces the removed np.trapz; numerically identical.
+    _trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    tx_power = _trapz(np.abs(Xc[:, 0]) ** 2, dx=T / N) / T
 
     C = np.fft.ifft(T_C * Xc,len(samples),0)
     #C = np.fft.fftshift(C, 0)
     C = np.sqrt(N) * C / np.linalg.norm(C[:, 0])
-   
-    #plt.plot(np.fft.ifft(PULSE_FFT * CA_FFT),'b')
-    #plt.plot(C[:,0],'r--')
-    #plt.show()
-    CQ = np.conj(Q).T @ C
+
+    # Returns (Q, C, CQ, tx_power) as expected by single_polarization.create_output_correlator.
+    # Qw is recomputed downstream via TruncatedSVD (model.create_Qw), so the full
+    # SVD previously computed here was redundant and has been removed.
+    return Q, C, C.T @ Q, tx_power
 
 
-    U,S,Vh = np.linalg.svd(Q,0)
-    Qw = U
-    OMEGA = np.diag(S)@Vh
+def build_correlator_bank(B, Tc, T, BANK_delay, CA_FFT):
+    """Build the (delay-independent) correlator-bank matrix Q and the transmit
+    power. These depend only on fixed system quantities (bandwidth, the bank of
+    correlator delays and the C/A code), NOT on the random per-realization
+    line-of-sight/multipath delays, so they can be precomputed once and reused
+    across an entire Monte-Carlo sequence.
 
-    CQw = np.conj(Qw).T @ C
+    This is the exact ``Q`` / ``tx_power`` computation of :func:`correlator_bank_Q`,
+    factored out so it is not recomputed on every Monte-Carlo iteration.
+    """
+    N = 2 * B * T
+    f0 = 2 * B / N
+    samples = f0 * (np.linspace(0, int(N) - 1, int(N)) - (N / 2))
 
-    return CQ,Q,CQw,Qw,OMEGA
+    PULSE_FFT = np.fft.fftshift(np.sqrt(Tc) * np.sinc(samples * Tc) ** 2)
 
-    
+    T_Q = np.exp(-1j * 2 * np.pi * np.outer(samples, BANK_delay))
+    T_Q = np.fft.fftshift(T_Q, 0)
+    X = np.outer(PULSE_FFT * CA_FFT, np.ones(BANK_delay.size))
+    Q = np.fft.ifft(T_Q * X, len(samples), 0)
+    Q = np.sqrt(N) * Q / np.linalg.norm(Q[:, 0])
+
+    _trapz = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    tx_power = _trapz(np.abs(PULSE_FFT * CA_FFT) ** 2, dx=T / N) / T
+
+    return Q, tx_power
+
+
+def build_signal_C(B, Tc, T, delay, CA_FFT):
+    """Build the delay-replica matrix C for the given (per-realization) delays.
+
+    This is the exact ``C`` computation of :func:`correlator_bank_Q`, factored
+    out so that only this (small, N x L) matrix is rebuilt per Monte-Carlo draw,
+    while the heavy ``Q``/``Qw`` operators stay precomputed.
+    """
+    N = 2 * B * T
+    f0 = 2 * B / N
+    samples = f0 * (np.linspace(0, int(N) - 1, int(N)) - (N / 2))
+
+    PULSE_FFT = np.fft.fftshift(np.sqrt(Tc) * np.sinc(samples * Tc) ** 2)
+
+    T_C = np.exp(-1j * 2 * np.pi * np.outer(samples, delay))
+    T_C = np.fft.fftshift(T_C, 0)
+    Xc = np.outer(PULSE_FFT * CA_FFT, np.ones(delay.size))
+    C = np.fft.ifft(T_C * Xc, len(samples), 0)
+    C = np.sqrt(N) * C / np.linalg.norm(C[:, 0])
+    return C
+
+
 
 
 def  frequecy_domain_CA(B, T, SAT):
-    
-    Folder = 'C:\\Users\\danie\\Git\\GNSS_Artigo\\CACODE' + str(SAT) + '_' + str(B) + '.pkl'
+
+    Folder = cacode_cache_path(SAT, B)
 
     if exists(Folder) :
 
@@ -230,7 +277,7 @@ def  frequecy_domain_CA(B, T, SAT):
                 'CA_SPEC': CA_SPEC}
 
         code_df = pd.DataFrame(data=code)
-        Folder = 'C:\\Users\\danie\\Git\\GNSS_Artigo\\CACODE' + str(SAT) + '_' + str(B) + '.pkl'
-        code_df.to_pickle(Folder)
+        os.makedirs(CACODE_DIR, exist_ok=True)
+        code_df.to_pickle(cacode_cache_path(SAT, B))
 
     return CA_fft, CA_SPEC

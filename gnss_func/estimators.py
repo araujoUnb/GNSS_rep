@@ -1,9 +1,10 @@
 import numpy as np
 import tensorly as tl
 from scipy.signal import find_peaks
-from bayopt.gaussian import MM_BSL
+from scipy.optimize import minimize_scalar
+from bayopt.gaussian import eMM_BSL as MM_BSL
 from gnss_func.array import array_lin
-from gnss_func.gnss_function import create_matrix_C
+from gnss_func.gnss_function import create_matrix_C, build_signal_C
 import matplotlib.pyplot as plt
 
 
@@ -122,3 +123,280 @@ class singlePolModel_estimator:
         self.beta_angle = self.sparse_angle_estimation()
         plt.plot(self.theta_deg_space, np.sum(np.abs(self.beta_angle) ** 2,axis=1))
         plt.show()
+
+
+# ---------------------------------------------------------------------------
+# Swappable estimator layer (operates on a precomputed GNSSSystem).
+#
+# These classes separate the *estimator* from the *forward model*: the delay
+# dictionary and angle manifold are built ONCE from the system and reused for
+# every received tensor, so swapping the estimation method (BSL, LSKRF, BO+Ref,
+# ...) is just instantiating a different subclass. They reproduce exactly the
+# numerics of singlePolModel_estimator above.
+# ---------------------------------------------------------------------------
+class DelayEstimator:
+    """Base class: subclasses implement ``estimate(rx) -> tau_los_est``."""
+
+    LIGHT_VELOCITY = 299792458.0
+
+    def __init__(self, system, theta_deg_space=None):
+        self.system = system
+        cfg = system.cfg
+        self.tau_space = np.linspace(
+            -1, 1, 2 * cfg.delay_granularity + 1
+        ) * cfg.chip_period
+        # delay dictionary projected onto the correlator subspace (precomputed)
+        Cbasis = create_matrix_C(
+            cfg.bandwidth, cfg.chip_period, cfg.time_period,
+            self.tau_space, system.CA_FFT,
+        )
+        self.delay_Basis = Cbasis.T @ system.proj
+        if theta_deg_space is None:
+            theta_deg_space = np.linspace(35, 75, 100)
+        self.theta_deg_space = theta_deg_space
+        self.angle_basis = array_lin(theta_deg_space, cfg.n_antennas)
+        self.tau_los_est = None
+
+    def estimate(self, rx):
+        raise NotImplementedError
+
+    def error_m(self, rx, tau_los_true):
+        """Ranging error in meters for one realization."""
+        return self.LIGHT_VELOCITY * np.abs(tau_los_true - self.estimate(rx))
+
+    # shared peak-picking on the delay power profile
+    def _peak_tau(self, beta):
+        power = np.fft.fftshift(np.sum(np.abs(beta) ** 2, axis=1))
+        idx_peaks = find_peaks(power)[0]
+        idx_sort = np.flipud(np.argsort(power[idx_peaks]))
+        self.tau_est = np.abs(self.tau_space[idx_peaks[idx_sort]])
+        self.tau_los_est = np.abs(self.tau_space[idx_peaks[idx_sort[0]]])
+        return self.tau_los_est
+
+
+class BSLDelayEstimator(DelayEstimator):
+    """Bayesian sparse-learning delay estimator (no angle pre-filtering)."""
+
+    def estimate(self, rx, a=0, b=0, c=0, d=0):
+        B = self.delay_Basis.T
+        Y = tl.unfold(rx, mode=1)
+        beta, _, _ = MM_BSL(B, Y, a, b, c, d)
+        return self._peak_tau(beta)
+
+
+class BSLDelayAngleEstimator(DelayEstimator):
+    """BSL delay estimator with a spatial (MUSIC-like) angle pre-filter."""
+
+    def _estimate_angles(self, rx):
+        Y = tl.unfold(rx, mode=2)
+        R = Y @ np.conj(Y).T
+        _, U = np.linalg.eig(R)
+        Ru = U[:, 2:] @ np.conj(U[:, 2:]).T
+        return 1 / np.diag(np.conj(self.angle_basis).T @ Ru @ self.angle_basis)
+
+    def estimate(self, rx, a=0, b=0, c=0, d=0):
+        beta_angle = self._estimate_angles(rx)
+        idx_peaks = find_peaks(np.abs(beta_angle) ** 2)[0]
+        idx_sort = np.flipud(np.argsort(np.abs(beta_angle)[idx_peaks]))
+        theta_est = self.theta_deg_space[idx_peaks[idx_sort[0:2]]]
+        A = array_lin(theta_est, self.system.cfg.n_antennas)
+        rx_filtered = tl.tenalg.mode_dot(rx, np.linalg.pinv(A), mode=2)
+        B = self.delay_Basis.T
+        Y = tl.unfold(rx_filtered, mode=1)
+        beta, _, _ = MM_BSL(B, Y, a, b, c, d)
+        return self._peak_tau(beta)
+
+
+# ===========================================================================
+# Fine delay dictionary + matched-filter delay objective (shared by the
+# refinement, LSKRF and BO estimators below). Built ONCE per estimator in the
+# compressed correlator subspace, so per-realization cost evaluations are cheap
+# (no N-point FFT per call).
+# ===========================================================================
+class _DelayObjective:
+    """Continuous matched-filter delay objective over a precomputed dictionary.
+
+    energy(tau) = || u(tau)^H Yd ||^2, with u(tau) the (unit-norm) compressed
+    delay signature interpolated from a fine grid, and Yd the mode-1 unfolding
+    of the received tensor. The LOS delay maximizes this energy.
+    """
+
+    def __init__(self, system, n_grid=512, tau_max_frac=1.0, chunk=16):
+        Tc = system.cfg.chip_period
+        self.tau_grid = np.linspace(0.0, tau_max_frac * Tc, n_grid)
+        n_qw = system.proj.shape[1]
+        U = np.empty((n_qw, n_grid), dtype=complex)
+        # Build the compressed signatures in chunks: the full N x n_grid replica
+        # matrix would be huge (N ~ 2e6), but its projection onto proj (n_qw cols)
+        # is tiny, so we never materialize more than `chunk` columns at a time.
+        for s in range(0, n_grid, chunk):
+            taus = self.tau_grid[s:s + chunk]
+            Cc = build_signal_C(system.cfg.bandwidth, Tc,
+                                system.cfg.time_period, taus, system.CA_FFT)
+            U[:, s:s + taus.size] = system.proj.conj().T @ Cc
+        norms = np.linalg.norm(U, axis=0, keepdims=True)
+        norms[norms == 0] = 1.0
+        self.U = U / norms                                      # unit columns
+
+    def signature(self, tau):
+        x = np.interp(tau, self.tau_grid, np.arange(self.tau_grid.size))
+        i0 = int(np.clip(np.floor(x), 0, self.tau_grid.size - 2))
+        f = x - i0
+        u = (1 - f) * self.U[:, i0] + f * self.U[:, i0 + 1]
+        n = np.linalg.norm(u)
+        return u / (n if n else 1.0)
+
+    def energy(self, tau, Yd):
+        u = self.signature(tau)
+        return float(np.sum(np.abs(u.conj() @ Yd) ** 2))
+
+
+def _delay_data(rx):
+    """Mode-1 (delay/correlator subspace) unfolding used as the MF data."""
+    return tl.unfold(rx, mode=1)
+
+
+def refine_delay(objective, rx, tau_init, span=None):
+    """Local L-BFGS-B-style refinement of a delay estimate (bounded scalar).
+
+    Maximizes the matched-filter energy around ``tau_init``. This is the
+    nonlinear-least-squares refinement stage of the paper.
+    """
+    Yd = _delay_data(rx)
+    grid = objective.tau_grid
+    if span is None:
+        span = 2.0 * (grid[1] - grid[0]) * 8  # a few grid steps
+    lo = max(grid[0], abs(tau_init) - span)
+    hi = min(grid[-1], abs(tau_init) + span)
+    if hi <= lo:
+        return abs(tau_init)
+    res = minimize_scalar(lambda t: -objective.energy(t, Yd),
+                          bounds=(lo, hi), method="bounded")
+    return float(res.x)
+
+
+class LSKRFDelayEstimator(DelayEstimator):
+    """LSKRF-style estimator: rank-L PARAFAC/CP factorization of the received
+    tensor, then the delay is read from the delay-mode factor by matched
+    filtering against the delay dictionary. The LOS is the earliest path.
+    """
+
+    def __init__(self, system, theta_deg_space=None, n_grid=512):
+        super().__init__(system, theta_deg_space)
+        self._obj = _DelayObjective(system, n_grid=n_grid)
+
+    def estimate(self, rx):
+        from tensorly.decomposition import parafac
+        L = 2
+        weights, factors = parafac(rx, rank=L, init="svd", normalize_factors=False)
+        delay_factor = factors[1]            # mode-1 factor (n_qw, L)
+        Yd_cols = delay_factor               # treat each column as MF data
+        taus = []
+        for ell in range(L):
+            col = Yd_cols[:, [ell]]
+            scores = np.abs(self._obj.U.conj().T @ col).ravel()
+            taus.append(self._obj.tau_grid[int(np.argmax(scores))])
+        taus = np.array(taus)
+        self.tau_los_est = float(np.min(np.abs(taus)))   # LOS = earliest path
+        return self.tau_los_est
+
+
+class BODelayEstimator(DelayEstimator):
+    """Bayesian-optimization delay estimator: a Gaussian-process surrogate
+    (Matern 3/2) with an expected-improvement acquisition searches the LOS delay
+    over [0, Tc] under a fixed evaluation budget ``i_max`` (plus ``n_init``
+    random starts). The limited budget reproduces the acquisition-induced
+    outliers discussed in the paper; pair with :class:`RefinedEstimator`.
+    """
+
+    def __init__(self, system, theta_deg_space=None, n_grid=512,
+                 i_max=50, n_init=5, xi=0.1, seed=0):
+        super().__init__(system, theta_deg_space)
+        self._obj = _DelayObjective(system, n_grid=n_grid)
+        self.i_max = i_max
+        self.n_init = n_init
+        self.xi = xi
+        self.seed = seed
+
+    def estimate(self, rx):
+        from sklearn.gaussian_process import GaussianProcessRegressor
+        from sklearn.gaussian_process.kernels import Matern, ConstantKernel
+        from scipy.stats import norm
+
+        Yd = _delay_data(rx)
+        Tc = self.system.cfg.chip_period
+        rng = np.random.default_rng(self.seed)
+
+        def f(t):
+            return self._obj.energy(t, Yd)
+
+        X = list(rng.uniform(0, Tc, self.n_init))
+        y = [f(t) for t in X]
+        kernel = ConstantKernel(1.0) * Matern(
+            length_scale=Tc / 10, nu=1.5)
+        cand = np.linspace(0, Tc, self._obj.tau_grid.size)
+
+        for _ in range(self.i_max - self.n_init):
+            gp = GaussianProcessRegressor(kernel=kernel, normalize_y=True,
+                                          alpha=1e-6)
+            gp.fit(np.array(X)[:, None], np.array(y))
+            mu, sd = gp.predict(cand[:, None], return_std=True)
+            best = np.max(y)
+            sd = np.maximum(sd, 1e-12)
+            z = (mu - best - self.xi) / sd
+            ei = (mu - best - self.xi) * norm.cdf(z) + sd * norm.pdf(z)
+            t_next = cand[int(np.argmax(ei))]
+            X.append(float(t_next))
+            y.append(f(t_next))
+
+        self.tau_los_est = float(X[int(np.argmax(y))])
+        return self.tau_los_est
+
+
+class RefinedEstimator(DelayEstimator):
+    """Wraps a base estimator with the NLS refinement stage ("X + Ref.").
+
+    Subclass and set ``base_cls`` (or use :func:`make_refined`).
+    """
+    base_cls = BSLDelayEstimator
+    base_kwargs = {}
+
+    def __init__(self, system, theta_deg_space=None, **kwargs):
+        super().__init__(system, theta_deg_space)
+        merged = {**self.base_kwargs, **kwargs}
+        self.base = self.base_cls(system, theta_deg_space, **merged)
+        self._obj = getattr(self.base, "_obj", None)
+        if self._obj is None:
+            self._obj = _DelayObjective(system, n_grid=merged.get("n_grid", 512))
+
+    def estimate(self, rx):
+        tau0 = self.base.estimate(rx)
+        self.tau_los_est = refine_delay(self._obj, rx, tau0)
+        return self.tau_los_est
+
+
+def make_refined(base_cls, name=None, **base_kwargs):
+    """Factory: build an 'X + Ref.' estimator class from a base estimator."""
+    cls = type(name or (base_cls.__name__ + "Refined"),
+               (RefinedEstimator,),
+               {"base_cls": base_cls, "base_kwargs": base_kwargs})
+    return cls
+
+
+# Ready-to-use refined variants (swap these into ScenarioRunner)
+BSLRefined = make_refined(BSLDelayEstimator, "BSLRefined")
+LSKRFRefined = make_refined(LSKRFDelayEstimator, "LSKRFRefined")
+BORefined = make_refined(BODelayEstimator, "BORefined")
+
+
+# Name -> class registry, so scenarios / SLURM jobs can select the estimator
+# layer by string (fully auditable in the YAML/CSV).
+ESTIMATORS = {
+    "BSL": BSLDelayEstimator,
+    "BSL+Ref": BSLRefined,
+    "BSLangle": BSLDelayAngleEstimator,
+    "LSKRF": LSKRFDelayEstimator,
+    "LSKRF+Ref": LSKRFRefined,
+    "BO": BODelayEstimator,
+    "BO+Ref": BORefined,
+}

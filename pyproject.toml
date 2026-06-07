@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gnss-delay-sim"
+version = "0.1.0"
+description = "GNSS time-delay estimation Monte-Carlo simulator (uncalibrated arrays)"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "tensorly",
+    "scikit-learn",
+    "matplotlib",
+    "pyyaml",
+]
+
+[tool.setuptools]
+packages = ["gnss_func", "bayopt"]

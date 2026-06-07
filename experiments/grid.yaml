@@ -1,0 +1,32 @@
+# Experiment grid for the DSP revision (complements the response letter).
+# The scenario list is the cartesian product of the `experiment` lists; each
+# scenario runs `n_mc` Monte-Carlo realizations (seed = base_seed + mc_index).
+# A SLURM array task picks one scenario via SLURM_ARRAY_TASK_ID.
+
+system:
+  sat_id: 20
+  bandwidth: 1023000000.0      # B = 1023e6  (heavy: N = 2*B*T = 2,046,000)
+  fc: 1575420000.0
+  time_period: 0.001
+  n_antennas: 8
+  n_epochs: 30
+  delay_granularity: 11
+  delta_phi_deg: 60.0
+  smr_db: 5.0
+
+experiment:
+  cn0_db: [48.0]
+  delta_tau_frac: [0.1, 0.5, 0.9]
+  epsilon: [0.0, 0.001, 0.009, 0.02, 0.05, 0.1, 0.2]
+  estimators: ["LSKRF", "LSKRF+Ref", "BO", "BO+Ref"]
+  base_seed: 20240101
+  n_mc: 100
+  checkpoint_every: 10
+
+estimator_params:
+  n_grid: 1024        # fine delay dictionary resolution (LSKRF/BO/+Ref)
+  bo_i_max: 50        # BO evaluation budget
+  bo_n_init: 5        # BO initial random points
+  bo_xi: 0.1          # BO expected-improvement exploration parameter
+
+out_root: results
