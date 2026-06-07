@@ -123,9 +123,17 @@ class GNSSSystem:
         S0 = taps @ tl.tenalg.khatri_rao([CQ.T, A]).T
         S = tl.tensor(S0.reshape(n_epochs, int(CQ.size / L), M))
 
-        sigma = self.noise_var(cn0_db)
+        # Post-correlation SNR from C/N0 (paper: C/N0=48 dB-Hz -> ~15 dB).
+        # Calibrate the noise to the ACTUAL signal power so the effective SNR
+        # matches the configured value (the legacy tx_power-based noise_var was
+        # mis-scaled by ~4-5 orders of magnitude, collapsing the SNR).
+        snr_db = (cn0_db - 10 * np.log10(2 * self.cfg.bandwidth)
+                  + 10 * np.log10(self.cfg.bandwidth * self.cfg.time_period))
+        snr = 10 ** (snr_db / 10)
+        p_sig = float(np.mean(np.abs(S) ** 2))
+        sigma = p_sig / snr                         # noise power per element
         a, b, c = S.shape
-        N2 = 1 / np.sqrt(2 * sigma) * (randn(b, a * c) + 1j * randn(b, a * c))
+        N2 = np.sqrt(sigma / 2) * (randn(b, a * c) + 1j * randn(b, a * c))
         N2 = self.Lnoise @ N2
         noise = tl.tensor(N2.reshape(a, b, c))
 

@@ -237,7 +237,11 @@ class _DelayObjective:
             taus = self.tau_grid[s:s + chunk]
             Cc = build_signal_C(system.cfg.bandwidth, Tc,
                                 system.cfg.time_period, taus, system.CA_FFT)
-            U[:, s:s + taus.size] = system.proj.conj().T @ Cc
+            # Must match the forward signal signature exactly: simulate() uses
+            # CQ = C^T @ proj, i.e. column signature = proj^T c(tau) (NO conjugate
+            # on proj). Using proj^H here was a bug that made D(tau) the conjugate
+            # of the signal subspace -> residual never vanished -> flat objective.
+            U[:, s:s + taus.size] = system.proj.T @ Cc
         self.U = U                                   # raw signatures (LS-scaled)
 
     def signature(self, tau):
