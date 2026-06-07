@@ -5,11 +5,12 @@
 
 system:
   sat_id: 20
-  bandwidth: 1023000000.0      # B = 1023e6  (heavy: N = 2*B*T = 2,046,000)
+  bandwidth: 1023000.0         # B = 1.023 MHz (paper Table) -> N = 2046 (light)
   fc: 1575420000.0
   time_period: 0.001
   n_antennas: 8
   n_epochs: 30
+  n_correlators: 11            # Q correlators (paper)
   delay_granularity: 11
   delta_phi_deg: 60.0
   smr_db: 5.0

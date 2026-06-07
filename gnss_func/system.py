@@ -31,10 +31,12 @@ from gnss_func.utils import normalise_columns
 
 class GNSSSystem:
 
-    def __init__(self, cfg: SystemConfig, correlator_type="Qw", n_qw=7):
+    def __init__(self, cfg: SystemConfig, correlator_type="Qw", n_qw=None):
         self.cfg = cfg
         self.correlator_type = correlator_type
-        self.n_qw = n_qw
+        # Full whitening by default: keep all Q left singular vectors so that
+        # Qw^H Qw = I_Q, matching the paper's Q_omega (Q_omega^H Q_omega = I_Q).
+        self.n_qw = cfg.n_correlators if n_qw is None else n_qw
 
         B, Tc, T = cfg.bandwidth, cfg.chip_period, cfg.time_period
 
@@ -48,7 +50,7 @@ class GNSSSystem:
 
         if correlator_type == "Qw":
             U, _, _ = np.linalg.svd(self.Q, full_matrices=False)
-            self.Qw = normalise_columns(U[:, :n_qw])
+            self.Qw = normalise_columns(U[:, :self.n_qw])
             self.proj = self.Qw
         else:
             self.Qw = None
@@ -60,7 +62,7 @@ class GNSSSystem:
     # ------------------------------------------------------------------ helpers
     def bank_delay(self):
         Tc = self.cfg.chip_period
-        return np.linspace(-Tc, Tc, 2 * self.cfg.delay_granularity)
+        return np.linspace(-Tc, Tc, self.cfg.n_correlators)
 
     def calc_snr_pre(self, cn0_db):
         return cn0_db - 10 * np.log10(2 * self.cfg.bandwidth)
@@ -109,6 +111,13 @@ class GNSSSystem:
             A = A + eps * Ap
 
         taps = 1 / np.sqrt(2) * (randn(n_epochs, L) + 1j * randn(n_epochs, L))
+        # Signal-to-multipath ratio: attenuate the non-LOS paths so that
+        # P_LOS / P_NLOS = smr_db (paper: 5 dB). Path 0 is the LOS.
+        smr = getattr(self.cfg, "smr_db", 0.0)
+        if smr and L > 1:
+            w = np.ones(L)
+            w[1:] = 10 ** (-smr / 20.0)
+            taps = taps * w
         S0 = taps @ tl.tenalg.khatri_rao([CQ.T, A]).T
         S = tl.tensor(S0.reshape(n_epochs, int(CQ.size / L), M))
 

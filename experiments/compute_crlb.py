@@ -30,7 +30,9 @@ def main():
     base_cfg = dict(
         sat_id=sysp["sat_id"], bandwidth=sysp["bandwidth"], fc=sysp["fc"],
         time_period=sysp["time_period"], n_antennas=sysp["n_antennas"],
-        n_epochs=sysp["n_epochs"], delay_granularity=sysp["delay_granularity"],
+        n_epochs=sysp["n_epochs"],
+        n_correlators=sysp.get("n_correlators", 11),
+        delay_granularity=sysp["delay_granularity"],
         cn0_db=cn0, delta_phi_deg=sysp["delta_phi_deg"],
     )
     # operators do not depend on epsilon (epsilon enters the CRB noise model),

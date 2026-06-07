@@ -11,15 +11,22 @@ from dataclasses import dataclass
 @dataclass
 class SystemConfig:
     # --- transmitter / signal ---
+    # NOTE: defaults below are the WORKING config that reproduces the reference
+    # deltaTau data. The paper Table states B=1.023 MHz (N=2046) and Q=11, but
+    # that config (with full Q_omega) collapses estimator performance (~100 m,
+    # outlier ~1). The mismatch is pending the original code — see the memory
+    # note gnss-lskrf-bo-fidelity-open.
     sat_id: int = 20                 # GPS satellite (PRN) id
-    bandwidth: float = 1023e6        # one-sided bandwidth B [Hz]
+    bandwidth: float = 1023e6        # working B (paper Table says 1.023e6)
     fc: float = 1575.42e6            # carrier frequency (L1) [Hz]
     time_period: float = 1e-3        # coherent integration period T [s]
 
     # --- receiver / array ---
     n_antennas: int = 8              # ULA elements
     n_epochs: int = 30               # number of snapshots (periods)
-    delay_granularity: int = 11      # controls #correlators and tau grid
+    n_correlators: int = 22          # bank size (working; paper Table says Q=11)
+    n_qw: int = 7                    # signal-subspace dim kept by whitening (denoising)
+    delay_granularity: int = 11      # estimator delay-grid resolution
 
     # --- operating point ---
     cn0_db: float = 48.0             # carrier-to-noise density [dB-Hz]
