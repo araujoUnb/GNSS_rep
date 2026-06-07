@@ -39,7 +39,7 @@ class MonteCarloSimulation:
     """Forward model + estimator with the heavy operators precomputed once."""
 
     def __init__(self, cfg: SystemConfig, estimator_cls=BSLDelayEstimator,
-                 correlator_type="Qw", theta_deg_space=None, n_qw=7,
+                 correlator_type="Qw", theta_deg_space=None, n_qw=None,
                  estimator_kwargs=None):
         self.cfg = cfg
         self.estimator_cls = estimator_cls
@@ -97,7 +97,7 @@ class ScenarioRunner:
 
     def __init__(self, cfg: SystemConfig, delta_tau_frac, cn0_db=None,
                  base_seed=0, estimator_cls=BSLDelayEstimator,
-                 correlator_type="Qw", theta_deg_space=None, n_qw=7,
+                 correlator_type="Qw", theta_deg_space=None, n_qw=None,
                  estimator_kwargs=None, out_root=None, label=None):
         if out_root is None:
             out_root = default_results_dir()

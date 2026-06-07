@@ -1,7 +1,7 @@
 import numpy as np
 import tensorly as tl
 from scipy.signal import find_peaks
-from scipy.optimize import minimize_scalar
+from scipy.optimize import minimize, minimize_scalar  # noqa: F401
 from bayopt.gaussian import eMM_BSL as MM_BSL
 from gnss_func.array import array_lin
 from gnss_func.gnss_function import create_matrix_C, build_signal_C
@@ -214,109 +214,118 @@ class BSLDelayAngleEstimator(DelayEstimator):
 # (no N-point FFT per call).
 # ===========================================================================
 class _DelayObjective:
-    """Continuous matched-filter delay objective over a precomputed dictionary.
+    """Multipath-aware delay objective over a precomputed signature dictionary.
 
-    energy(tau) = || u(tau)^H Yd ||^2, with u(tau) the (unit-norm) compressed
-    delay signature interpolated from a fine grid, and Yd the mode-1 unfolding
-    of the received tensor. The LOS delay maximizes this energy.
+    For a delay VECTOR ``tau_vec`` (one entry per path, L paths), the paper's
+    cost is the mode-2 least-squares residual
+
+        f(tau) = || [Y]_(2) - D(tau) ( D(tau)^+ [Y]_(2) ) ||_F^2,
+
+    with ``D(tau) = [ u(tau_0) ... u(tau_{L-1}) ]`` the compressed delay
+    signatures. ``u(tau) = proj^H c(tau)`` is interpolated from a fine grid so
+    each evaluation is cheap (no N-point FFT per call). Both the Bayesian
+    optimisation and its L-BFGS-B refinement minimise this same ``residual``.
     """
 
     def __init__(self, system, n_grid=512, tau_max_frac=1.0, chunk=16):
         Tc = system.cfg.chip_period
+        self.Tc = Tc
         self.tau_grid = np.linspace(0.0, tau_max_frac * Tc, n_grid)
         n_qw = system.proj.shape[1]
         U = np.empty((n_qw, n_grid), dtype=complex)
-        # Build the compressed signatures in chunks: the full N x n_grid replica
-        # matrix would be huge (N ~ 2e6), but its projection onto proj (n_qw cols)
-        # is tiny, so we never materialize more than `chunk` columns at a time.
         for s in range(0, n_grid, chunk):
             taus = self.tau_grid[s:s + chunk]
             Cc = build_signal_C(system.cfg.bandwidth, Tc,
                                 system.cfg.time_period, taus, system.CA_FFT)
             U[:, s:s + taus.size] = system.proj.conj().T @ Cc
-        norms = np.linalg.norm(U, axis=0, keepdims=True)
-        norms[norms == 0] = 1.0
-        self.U = U / norms                                      # unit columns
+        self.U = U                                   # raw signatures (LS-scaled)
 
     def signature(self, tau):
         x = np.interp(tau, self.tau_grid, np.arange(self.tau_grid.size))
         i0 = int(np.clip(np.floor(x), 0, self.tau_grid.size - 2))
         f = x - i0
-        u = (1 - f) * self.U[:, i0] + f * self.U[:, i0 + 1]
-        n = np.linalg.norm(u)
-        return u / (n if n else 1.0)
+        return (1 - f) * self.U[:, i0] + f * self.U[:, i0 + 1]
 
+    def matrix_D(self, tau_vec):
+        return np.column_stack([self.signature(t) for t in np.atleast_1d(tau_vec)])
+
+    def residual(self, tau_vec, Yd):
+        """Mode-2 LS residual f(tau) for a delay vector (lower is better)."""
+        D = self.matrix_D(tau_vec)
+        M, *_ = np.linalg.lstsq(D, Yd, rcond=None)
+        R = Yd - D @ M
+        return float(np.real(np.vdot(R, R)))
+
+    # single-delay matched-filter energy (used by the LSKRF column matching)
     def energy(self, tau, Yd):
         u = self.signature(tau)
+        u = u / (np.linalg.norm(u) or 1.0)
         return float(np.sum(np.abs(u.conj() @ Yd) ** 2))
 
 
 def _delay_data(rx):
-    """Mode-1 (delay/correlator subspace) unfolding used as the MF data."""
+    """Mode-1 (delay/correlator subspace) unfolding used as the objective data."""
     return tl.unfold(rx, mode=1)
 
 
-def refine_delay(objective, rx, tau_init, span=None):
-    """Local L-BFGS-B-style refinement of a delay estimate (bounded scalar).
-
-    Maximizes the matched-filter energy around ``tau_init``. This is the
-    nonlinear-least-squares refinement stage of the paper.
-    """
+def refine_delays(objective, rx, tau_init_vec):
+    """L-BFGS-B refinement of the FULL delay vector, started from ``tau_init_vec``
+    (e.g. the BO result), minimising the same mode-2 residual f(tau)."""
     Yd = _delay_data(rx)
-    grid = objective.tau_grid
-    if span is None:
-        span = 2.0 * (grid[1] - grid[0]) * 8  # a few grid steps
-    lo = max(grid[0], abs(tau_init) - span)
-    hi = min(grid[-1], abs(tau_init) + span)
-    if hi <= lo:
-        return abs(tau_init)
-    res = minimize_scalar(lambda t: -objective.energy(t, Yd),
-                          bounds=(lo, hi), method="bounded")
-    return float(res.x)
+    Tc = objective.Tc
+    x0 = np.clip(np.atleast_1d(tau_init_vec), 0, Tc)
+    res = minimize(lambda tv: objective.residual(tv, Yd), x0,
+                   method="L-BFGS-B", bounds=[(0.0, Tc)] * x0.size)
+    return np.sort(np.asarray(res.x))
 
 
 class LSKRFDelayEstimator(DelayEstimator):
     """LSKRF-style estimator: rank-L PARAFAC/CP factorization of the received
-    tensor, then the delay is read from the delay-mode factor by matched
-    filtering against the delay dictionary. The LOS is the earliest path.
+    tensor, then the delay of each path is read from the delay-mode factor by
+    matched filtering against the dictionary. The LOS is the earliest path.
     """
 
-    def __init__(self, system, theta_deg_space=None, n_grid=512):
+    def __init__(self, system, theta_deg_space=None, n_grid=512, n_paths=2):
         super().__init__(system, theta_deg_space)
         self._obj = _DelayObjective(system, n_grid=n_grid)
+        self.n_paths = n_paths
+        self.delays = None
 
     def estimate(self, rx):
         from tensorly.decomposition import parafac
-        L = 2
-        weights, factors = parafac(rx, rank=L, init="svd", normalize_factors=False)
+        L = self.n_paths
+        _, factors = parafac(rx, rank=L, init="svd", normalize_factors=False)
         delay_factor = factors[1]            # mode-1 factor (n_qw, L)
-        Yd_cols = delay_factor               # treat each column as MF data
         taus = []
         for ell in range(L):
-            col = Yd_cols[:, [ell]]
+            col = delay_factor[:, [ell]]
             scores = np.abs(self._obj.U.conj().T @ col).ravel()
             taus.append(self._obj.tau_grid[int(np.argmax(scores))])
-        taus = np.array(taus)
-        self.tau_los_est = float(np.min(np.abs(taus)))   # LOS = earliest path
+        self.delays = np.sort(np.abs(taus))
+        self.tau_los_est = float(self.delays[0])     # LOS = earliest path
         return self.tau_los_est
 
 
 class BODelayEstimator(DelayEstimator):
-    """Bayesian-optimization delay estimator: a Gaussian-process surrogate
-    (Matern 3/2) with an expected-improvement acquisition searches the LOS delay
-    over [0, Tc] under a fixed evaluation budget ``i_max`` (plus ``n_init``
-    random starts). The limited budget reproduces the acquisition-induced
-    outliers discussed in the paper; pair with :class:`RefinedEstimator`.
+    """Bayesian-optimisation delay estimator (paper method). A Gaussian-process
+    surrogate (Matern 3/2) with an expected-improvement acquisition searches the
+    FULL L-path delay vector over [0, Tc]^L, minimising the mode-2 residual
+    f(tau), under a fixed budget ``i_max`` (+ ``n_init`` random starts). The LOS
+    estimate is the earliest of the recovered delays; pair with
+    :class:`RefinedEstimator` for the L-BFGS-B refinement.
     """
 
     def __init__(self, system, theta_deg_space=None, n_grid=512,
-                 i_max=50, n_init=5, xi=0.1, seed=0):
+                 i_max=50, n_init=5, xi=0.1, n_paths=2, n_cand=512, seed=0):
         super().__init__(system, theta_deg_space)
         self._obj = _DelayObjective(system, n_grid=n_grid)
         self.i_max = i_max
         self.n_init = n_init
         self.xi = xi
+        self.n_paths = n_paths
+        self.n_cand = n_cand
         self.seed = seed
+        self.delays = None
 
     def estimate(self, rx):
         from sklearn.gaussian_process import GaussianProcessRegressor
@@ -324,38 +333,44 @@ class BODelayEstimator(DelayEstimator):
         from scipy.stats import norm
 
         Yd = _delay_data(rx)
-        Tc = self.system.cfg.chip_period
+        Tc = self._obj.Tc
+        L = self.n_paths
         rng = np.random.default_rng(self.seed)
 
-        def f(t):
-            return self._obj.energy(t, Yd)
+        def g(tv):                       # maximise -residual
+            return -self._obj.residual(tv, Yd)
 
-        X = list(rng.uniform(0, Tc, self.n_init))
-        y = [f(t) for t in X]
-        kernel = ConstantKernel(1.0) * Matern(
-            length_scale=Tc / 10, nu=1.5)
-        cand = np.linspace(0, Tc, self._obj.tau_grid.size)
+        def rand_pts(n):
+            return np.sort(rng.uniform(0, Tc, size=(n, L)), axis=1)
 
-        for _ in range(self.i_max - self.n_init):
+        X = rand_pts(self.n_init)
+        y = [g(x) for x in X]
+        kernel = ConstantKernel(1.0) * Matern(length_scale=Tc / 10, nu=1.5)
+
+        for _ in range(max(0, self.i_max - self.n_init)):
             gp = GaussianProcessRegressor(kernel=kernel, normalize_y=True,
                                           alpha=1e-6)
-            gp.fit(np.array(X)[:, None], np.array(y))
-            mu, sd = gp.predict(cand[:, None], return_std=True)
+            gp.fit(np.array(X), np.array(y))
+            cand = rand_pts(self.n_cand)
+            mu, sd = gp.predict(cand, return_std=True)
             best = np.max(y)
             sd = np.maximum(sd, 1e-12)
             z = (mu - best - self.xi) / sd
             ei = (mu - best - self.xi) * norm.cdf(z) + sd * norm.pdf(z)
-            t_next = cand[int(np.argmax(ei))]
-            X.append(float(t_next))
-            y.append(f(t_next))
+            x_next = cand[int(np.argmax(ei))]
+            X = np.vstack([X, x_next])
+            y.append(g(x_next))
 
-        self.tau_los_est = float(X[int(np.argmax(y))])
+        self.delays = np.sort(X[int(np.argmax(y))])
+        self.tau_los_est = float(self.delays[0])
         return self.tau_los_est
 
 
 class RefinedEstimator(DelayEstimator):
-    """Wraps a base estimator with the NLS refinement stage ("X + Ref.").
+    """Wraps a base estimator with the L-BFGS-B refinement stage ("X + Ref.").
 
+    Refines the FULL delay vector returned by the base estimator (started from
+    the base result) on the same mode-2 objective; LOS = earliest refined delay.
     Subclass and set ``base_cls`` (or use :func:`make_refined`).
     """
     base_cls = BSLDelayEstimator
@@ -370,8 +385,12 @@ class RefinedEstimator(DelayEstimator):
             self._obj = _DelayObjective(system, n_grid=merged.get("n_grid", 512))
 
     def estimate(self, rx):
-        tau0 = self.base.estimate(rx)
-        self.tau_los_est = refine_delay(self._obj, rx, tau0)
+        self.base.estimate(rx)
+        tau0 = getattr(self.base, "delays", None)
+        if tau0 is None:
+            tau0 = np.array([self.base.tau_los_est])
+        self.delays = refine_delays(self._obj, rx, tau0)
+        self.tau_los_est = float(self.delays[0])
         return self.tau_los_est
 
 

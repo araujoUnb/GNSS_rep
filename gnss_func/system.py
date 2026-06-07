@@ -34,9 +34,11 @@ class GNSSSystem:
     def __init__(self, cfg: SystemConfig, correlator_type="Qw", n_qw=None):
         self.cfg = cfg
         self.correlator_type = correlator_type
-        # Full whitening by default: keep all Q left singular vectors so that
-        # Qw^H Qw = I_Q, matching the paper's Q_omega (Q_omega^H Q_omega = I_Q).
-        self.n_qw = cfg.n_correlators if n_qw is None else n_qw
+        # Whitening subspace dimension. Priority: explicit arg > cfg.n_qw >
+        # full Q (paper's Q_omega with Q_omega^H Q_omega = I_Q).
+        if n_qw is None:
+            n_qw = cfg.n_qw if getattr(cfg, "n_qw", None) else cfg.n_correlators
+        self.n_qw = n_qw
 
         B, Tc, T = cfg.bandwidth, cfg.chip_period, cfg.time_period
 
