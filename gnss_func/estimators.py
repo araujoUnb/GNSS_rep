@@ -275,18 +275,30 @@ def _delay_data(rx):
     return tl.unfold(rx, mode=1)
 
 
-def refine_delays(objective, rx, tau_init_vec):
+def refine_delays(objective, rx, tau_init_vec, span=None):
     """L-BFGS-B refinement of the FULL delay vector, started from ``tau_init_vec``
-    (e.g. the BO result), minimising the same mode-2 residual f(tau)."""
+    (e.g. the BO result), minimising the same mode-2 residual f(tau).
+
+    ``span`` (seconds) makes the refinement LOCAL: each delay is bounded to
+    [init-span, init+span]. A local refinement only polishes an init that is
+    already in the right neighbourhood (the role of the BO global search); an
+    init farther than ``span`` from the true delay (e.g. a collapsed LSKRF
+    estimate) cannot be recovered. ``span=None`` keeps the global [0, 2Tc] bound
+    (basin ~1 chip).
+    """
     Yd = _delay_data(rx)
     Tc = objective.Tc
     Tmax = float(objective.tau_grid[-1])
-    # Optimise in normalised units x = tau/Tc (O(1)): delays are ~1e-7 s, where
-    # L-BFGS-B's default finite-difference step (~1e-8) would corrupt the
-    # gradient and the refinement would never move (BO==BO+Ref).
-    x0 = np.clip(np.atleast_1d(tau_init_vec) / Tc, 0, Tmax / Tc)
-    res = minimize(lambda x: objective.residual(np.asarray(x) * Tc, Yd), x0,
-                   method="L-BFGS-B", bounds=[(0.0, Tmax / Tc)] * x0.size)
+    x0v = np.clip(np.atleast_1d(tau_init_vec), 0.0, Tmax)
+    if span is None:
+        bounds = [(0.0, Tmax / Tc)] * x0v.size
+    else:
+        bounds = [(max(0.0, t - span) / Tc, min(Tmax, t + span) / Tc)
+                  for t in x0v]
+    # Optimise in normalised units x = tau/Tc (O(1)) so L-BFGS-B's
+    # finite-difference gradient is well scaled (delays are ~1e-7 s).
+    res = minimize(lambda x: objective.residual(np.asarray(x) * Tc, Yd),
+                   x0v / Tc, method="L-BFGS-B", bounds=bounds)
     return np.sort(np.asarray(res.x) * Tc)
 
 
@@ -478,20 +490,25 @@ class RefinedEstimator(DelayEstimator):
     base_cls = BSLDelayEstimator
     base_kwargs = {}
 
-    def __init__(self, system, theta_deg_space=None, **kwargs):
+    def __init__(self, system, theta_deg_space=None, refine_span=None, **kwargs):
         super().__init__(system, theta_deg_space)
         merged = {**self.base_kwargs, **kwargs}
         self.base = self.base_cls(system, theta_deg_space, **merged)
         self._obj = getattr(self.base, "_obj", None)
         if self._obj is None:
             self._obj = _DelayObjective(system, n_grid=merged.get("n_grid", 512))
+        # LOCAL refinement window (a refinement polishes a good init; it does not
+        # redo the global search). Default ~0.1 chip: a BO init lands inside it,
+        # but a collapsed LSKRF init lies outside -> refinement cannot rescue it.
+        self.refine_span = (system.cfg.chip_period / 10.0
+                            if refine_span is None else refine_span)
 
     def estimate(self, rx):
         self.base.estimate(rx)
         tau0 = getattr(self.base, "delays", None)
         if tau0 is None:
             tau0 = np.array([self.base.tau_los_est])
-        self.delays = refine_delays(self._obj, rx, tau0)
+        self.delays = refine_delays(self._obj, rx, tau0, span=self.refine_span)
         self.tau_los_est = float(self.delays[0])
         return self.tau_los_est
 
