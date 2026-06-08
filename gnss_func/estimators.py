@@ -307,10 +307,16 @@ class LSKRFDelayEstimator(DelayEstimator):
     """
 
     def __init__(self, system, theta_deg_space=None, n_grid=512, n_paths=2,
-                 angle_grid=None):
+                 angle_grid=None, los_only=False):
         super().__init__(system, theta_deg_space)
         self._obj = _DelayObjective(system, n_grid=n_grid)
         self.n_paths = n_paths
+        # los_only (experiment): rank-1 a(theta_los) only. Tested and rejected:
+        # a single steering column cannot NULL the NLOS at 5 deg, so it biases
+        # the LOS by ~21 m even at eps=0, unlike the paper (lskrf eps=0 ~0.4 m).
+        # The 2-path A_D (default) nulls the NLOS at eps=0 and degrades with eps,
+        # which is the faithful shape.
+        self.los_only = los_only
         # DOA search grid (ULA cos-manifold is unambiguous on [0,180] deg)
         if angle_grid is None:
             angle_grid = np.linspace(0.0, 180.0, 721)
@@ -324,12 +330,32 @@ class LSKRFDelayEstimator(DelayEstimator):
         return self._obj.tau_grid[int(np.argmax(scores))]
 
     def estimate_doa(self, rx):
-        """MUSIC DOA estimation on the array-mode covariance (L peaks)."""
+        """ESPRIT DOA estimation on the array-mode covariance.
+
+        ULA rotational invariance: adjacent elements differ by phase
+        pi*cos(theta) (array_lin uses cos). The signal-subspace shift operator
+        Phi = Es1^+ Es2 has eigenvalues exp(j*pi*cos(theta_l)), so
+        theta_l = arccos(angle(eig)/pi). Accurate at eps=0; under array errors
+        the invariance breaks -> biased angles -> the LSKRF A_D is wrong and the
+        delay collapses (the paper's epsilon sensitivity).
+        """
         L = self.n_paths
         Ya = tl.unfold(rx, mode=2)                    # (M, K*n_qw)
         R = Ya @ np.conj(Ya).T
-        w, U = np.linalg.eigh(R)                      # ascending eigenvalues
-        Un = U[:, :-L]                                # noise subspace (M-L)
+        _, U = np.linalg.eigh(R)                      # ascending eigenvalues
+        Es = U[:, -L:]                                # signal subspace (M, L)
+        Phi = np.linalg.pinv(Es[:-1, :]) @ Es[1:, :]  # (L, L)
+        eig = np.linalg.eigvals(Phi)
+        cos_t = np.clip(np.angle(eig) / np.pi, -1.0, 1.0)
+        return np.degrees(np.arccos(cos_t))          # angles in [0,180] deg
+
+    def estimate_doa_music(self, rx):
+        """MUSIC DOA (kept for reference; weaker at small separations)."""
+        L = self.n_paths
+        Ya = tl.unfold(rx, mode=2)
+        R = Ya @ np.conj(Ya).T
+        _, U = np.linalg.eigh(R)
+        Un = U[:, :-L]
         proj = np.conj(self.A_grid).T @ Un
         spec = 1.0 / np.sum(np.abs(proj) ** 2, axis=1)
         pk = find_peaks(spec)[0]
@@ -349,8 +375,26 @@ class LSKRFDelayEstimator(DelayEstimator):
         if theta_deg_vec is None:
             theta_deg_vec = self.estimate_doa(rx)
         self.angles_est = np.asarray(theta_deg_vec)
-        A_D = array_lin(self.angles_est, M)                  # (M, L) ideal
         Y3 = tl.unfold(rx, mode=2)                           # (M, K*n_qw)
+
+        if self.los_only:
+            # Rank-1 LOS-only: build the steering of the LOS path alone and
+            # recover only its delay. The LOS is the earliest path; with true
+            # angles it is theta[0], with estimated DOA it is the strongest peak
+            # (LOS dominates since SMR>0). The NLOS at 5 deg leaks through
+            # pinv(a_los) and, with eps, drives the LSKRF bias on the LOS.
+            theta_los = float(self.angles_est[0])
+            a_los = array_lin(np.array([theta_los]), M)      # (M, 1)
+            w = np.linalg.pinv(a_los) @ Y3                   # (1, K*n_qw)
+            Wl = w.reshape(K, nqw)
+            _, _, Vh = np.linalg.svd(Wl, full_matrices=False)
+            cqw = np.conj(Vh[0])
+            tau_los = self._match(cqw)
+            self.delays = np.array([abs(tau_los)])
+            self.tau_los_est = float(self.delays[0])
+            return self.tau_los_est
+
+        A_D = array_lin(self.angles_est, M)                  # (M, L) ideal
         W = np.linalg.pinv(A_D) @ Y3                         # (L, K*n_qw)
         taus = []
         for ell in range(L):
