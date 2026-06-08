@@ -227,7 +227,10 @@ class _DelayObjective:
     optimisation and its L-BFGS-B refinement minimise this same ``residual``.
     """
 
-    def __init__(self, system, n_grid=512, tau_max_frac=1.0, chunk=16):
+    def __init__(self, system, n_grid=512, tau_max_frac=2.0, chunk=16):
+        # tau_max_frac=2.0: delays span [0, 2 Tc] because the NLOS delay can be
+        # up to tau_los (<=Tc) + Delta_tau (<=Tc) ~ 2 Tc. A [0,Tc] grid clipped
+        # the second path and broke the 2-path fit.
         Tc = system.cfg.chip_period
         self.Tc = Tc
         self.tau_grid = np.linspace(0.0, tau_max_frac * Tc, n_grid)
@@ -276,10 +279,10 @@ def refine_delays(objective, rx, tau_init_vec):
     """L-BFGS-B refinement of the FULL delay vector, started from ``tau_init_vec``
     (e.g. the BO result), minimising the same mode-2 residual f(tau)."""
     Yd = _delay_data(rx)
-    Tc = objective.Tc
-    x0 = np.clip(np.atleast_1d(tau_init_vec), 0, Tc)
+    Tmax = float(objective.tau_grid[-1])
+    x0 = np.clip(np.atleast_1d(tau_init_vec), 0, Tmax)
     res = minimize(lambda tv: objective.residual(tv, Yd), x0,
-                   method="L-BFGS-B", bounds=[(0.0, Tc)] * x0.size)
+                   method="L-BFGS-B", bounds=[(0.0, Tmax)] * x0.size)
     return np.sort(np.asarray(res.x))
 
 
@@ -337,7 +340,7 @@ class BODelayEstimator(DelayEstimator):
         from scipy.stats import norm
 
         Yd = _delay_data(rx)
-        Tc = self._obj.Tc
+        Tmax = float(self._obj.tau_grid[-1])
         L = self.n_paths
         rng = np.random.default_rng(self.seed)
 
@@ -345,11 +348,12 @@ class BODelayEstimator(DelayEstimator):
             return -self._obj.residual(tv, Yd)
 
         def rand_pts(n):
-            return np.sort(rng.uniform(0, Tc, size=(n, L)), axis=1)
+            return np.sort(rng.uniform(0, Tmax, size=(n, L)), axis=1)
 
         X = rand_pts(self.n_init)
         y = [g(x) for x in X]
-        kernel = ConstantKernel(1.0) * Matern(length_scale=Tc / 10, nu=1.5)
+        kernel = ConstantKernel(1.0) * Matern(
+            length_scale=self._obj.Tc / 10, nu=1.5)
 
         for _ in range(max(0, self.i_max - self.n_init)):
             gp = GaussianProcessRegressor(kernel=kernel, normalize_y=True,
