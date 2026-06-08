@@ -130,3 +130,6 @@ dmypy.json
 
 results/
 CACODE/*.pkl
+
+# local paper data/analysis (not tracked)
+analysis/
