@@ -306,25 +306,50 @@ class LSKRFDelayEstimator(DelayEstimator):
     The estimator therefore needs the (assumed) angles: pass ``theta_deg_vec``.
     """
 
-    def __init__(self, system, theta_deg_space=None, n_grid=512, n_paths=2):
+    def __init__(self, system, theta_deg_space=None, n_grid=512, n_paths=2,
+                 angle_grid=None):
         super().__init__(system, theta_deg_space)
         self._obj = _DelayObjective(system, n_grid=n_grid)
         self.n_paths = n_paths
+        # DOA search grid (ULA cos-manifold is unambiguous on [0,180] deg)
+        if angle_grid is None:
+            angle_grid = np.linspace(0.0, 180.0, 721)
+        self.angle_grid = angle_grid
+        self.A_grid = array_lin(angle_grid, system.cfg.n_antennas)  # (M, G)
         self.delays = None
+        self.angles_est = None
 
     def _match(self, cqw):
         scores = np.abs(self._obj.U.conj().T @ cqw).ravel()
         return self._obj.tau_grid[int(np.argmax(scores))]
+
+    def estimate_doa(self, rx):
+        """MUSIC DOA estimation on the array-mode covariance (L peaks)."""
+        L = self.n_paths
+        Ya = tl.unfold(rx, mode=2)                    # (M, K*n_qw)
+        R = Ya @ np.conj(Ya).T
+        w, U = np.linalg.eigh(R)                      # ascending eigenvalues
+        Un = U[:, :-L]                                # noise subspace (M-L)
+        proj = np.conj(self.A_grid).T @ Un
+        spec = 1.0 / np.sum(np.abs(proj) ** 2, axis=1)
+        pk = find_peaks(spec)[0]
+        if len(pk) < L:
+            pk = np.argsort(spec)[::-1][:L]
+        order = pk[np.argsort(spec[pk])[::-1][:L]]
+        return self.angle_grid[order]
 
     def estimate(self, rx, theta_deg_vec=None):
         L = self.n_paths
         M = self.system.cfg.n_antennas
         K = self.system.cfg.n_epochs
         nqw = self._obj.U.shape[0]
+        # Faithful LSKRF estimates the DOAs (it is calibration-dependent); under
+        # array errors the estimated angles are themselves biased, which is a key
+        # source of the LSKRF breakdown. Pass theta_deg_vec to force ideal angles.
         if theta_deg_vec is None:
-            raise ValueError("LSKRF needs the (assumed-calibrated) angles "
-                             "theta_deg_vec to build the ideal steering A_D.")
-        A_D = array_lin(np.asarray(theta_deg_vec), M)        # (M, L) ideal
+            theta_deg_vec = self.estimate_doa(rx)
+        self.angles_est = np.asarray(theta_deg_vec)
+        A_D = array_lin(self.angles_est, M)                  # (M, L) ideal
         Y3 = tl.unfold(rx, mode=2)                           # (M, K*n_qw)
         W = np.linalg.pinv(A_D) @ Y3                         # (L, K*n_qw)
         taus = []
