@@ -279,17 +279,31 @@ def refine_delays(objective, rx, tau_init_vec):
     """L-BFGS-B refinement of the FULL delay vector, started from ``tau_init_vec``
     (e.g. the BO result), minimising the same mode-2 residual f(tau)."""
     Yd = _delay_data(rx)
+    Tc = objective.Tc
     Tmax = float(objective.tau_grid[-1])
-    x0 = np.clip(np.atleast_1d(tau_init_vec), 0, Tmax)
-    res = minimize(lambda tv: objective.residual(tv, Yd), x0,
-                   method="L-BFGS-B", bounds=[(0.0, Tmax)] * x0.size)
-    return np.sort(np.asarray(res.x))
+    # Optimise in normalised units x = tau/Tc (O(1)): delays are ~1e-7 s, where
+    # L-BFGS-B's default finite-difference step (~1e-8) would corrupt the
+    # gradient and the refinement would never move (BO==BO+Ref).
+    x0 = np.clip(np.atleast_1d(tau_init_vec) / Tc, 0, Tmax / Tc)
+    res = minimize(lambda x: objective.residual(np.asarray(x) * Tc, Yd), x0,
+                   method="L-BFGS-B", bounds=[(0.0, Tmax / Tc)] * x0.size)
+    return np.sort(np.asarray(res.x) * Tc)
 
 
 class LSKRFDelayEstimator(DelayEstimator):
-    """LSKRF-style estimator: rank-L PARAFAC/CP factorization of the received
-    tensor, then the delay of each path is read from the delay-mode factor by
-    matched filtering against the dictionary. The LOS is the earliest path.
+    """Least-Squares Khatri-Rao Factorization delay estimator (paper baseline).
+
+    Uses the IDEAL (assumed-calibrated) steering ``A_D`` built from the angles:
+      1. spatially separate the L paths via the array mode:
+         ``W = A_D^+ [Y]_(3)`` (shape L x K*n_qw);
+      2. each row of W is a vectorized rank-1 ``gamma_l (x) cqw_l``; reshape to
+         (K, n_qw) and take the rank-1 SVD -> delay factor ``cqw_l``;
+      3. match ``cqw_l`` to the delay dictionary -> tau_l; LOS = earliest.
+
+    Because the true array is ``A = A_D + eps*A_P``, ``A_D^+`` leaks energy
+    across paths, biasing the recovered delays -> the error grows with eps
+    (this is the LSKRF breakdown under calibration error reported in the paper).
+    The estimator therefore needs the (assumed) angles: pass ``theta_deg_vec``.
     """
 
     def __init__(self, system, theta_deg_space=None, n_grid=512, n_paths=2):
@@ -298,18 +312,29 @@ class LSKRFDelayEstimator(DelayEstimator):
         self.n_paths = n_paths
         self.delays = None
 
-    def estimate(self, rx):
-        from tensorly.decomposition import parafac
+    def _match(self, cqw):
+        scores = np.abs(self._obj.U.conj().T @ cqw).ravel()
+        return self._obj.tau_grid[int(np.argmax(scores))]
+
+    def estimate(self, rx, theta_deg_vec=None):
         L = self.n_paths
-        _, factors = parafac(rx, rank=L, init="svd", normalize_factors=False)
-        delay_factor = factors[1]            # mode-1 factor (n_qw, L)
+        M = self.system.cfg.n_antennas
+        K = self.system.cfg.n_epochs
+        nqw = self._obj.U.shape[0]
+        if theta_deg_vec is None:
+            raise ValueError("LSKRF needs the (assumed-calibrated) angles "
+                             "theta_deg_vec to build the ideal steering A_D.")
+        A_D = array_lin(np.asarray(theta_deg_vec), M)        # (M, L) ideal
+        Y3 = tl.unfold(rx, mode=2)                           # (M, K*n_qw)
+        W = np.linalg.pinv(A_D) @ Y3                         # (L, K*n_qw)
         taus = []
         for ell in range(L):
-            col = delay_factor[:, [ell]]
-            scores = np.abs(self._obj.U.conj().T @ col).ravel()
-            taus.append(self._obj.tau_grid[int(np.argmax(scores))])
+            Wl = W[ell].reshape(K, nqw)                      # gamma_l (x) cqw_l
+            _, _, Vh = np.linalg.svd(Wl, full_matrices=False)
+            cqw_l = np.conj(Vh[0])                           # delay factor (n_qw)
+            taus.append(self._match(cqw_l))
         self.delays = np.sort(np.abs(taus))
-        self.tau_los_est = float(self.delays[0])     # LOS = earliest path
+        self.tau_los_est = float(self.delays[0])             # LOS = earliest
         return self.tau_los_est
 
 
@@ -323,7 +348,7 @@ class BODelayEstimator(DelayEstimator):
     """
 
     def __init__(self, system, theta_deg_space=None, n_grid=512,
-                 i_max=50, n_init=5, xi=0.1, n_paths=2, n_cand=512, seed=0):
+                 i_max=25, n_init=20, xi=0.1, n_paths=2, n_cand=800, seed=0):
         super().__init__(system, theta_deg_space)
         self._obj = _DelayObjective(system, n_grid=n_grid)
         self.i_max = i_max
