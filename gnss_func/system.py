@@ -109,7 +109,12 @@ class GNSSSystem:
         # epsilon = 0 leaves the perfectly-calibrated model untouched.
         eps = getattr(self.cfg, "epsilon", 0.0)
         if eps:
-            Ap = (randn(M, L) + 1j * randn(M, L)) / np.sqrt(2)
+            # A_P i.i.d. complex Gaussian. ap_unit_variance=True -> E|A_P|^2=1
+            # ((randn+1j randn)/sqrt2); False -> real & imag each unit variance
+            # (E|A_P|^2=2), i.e. no 1/sqrt(2) (sqrt(2)x stronger perturbation).
+            Ap = randn(M, L) + 1j * randn(M, L)
+            if getattr(self.cfg, "ap_unit_variance", True):
+                Ap = Ap / np.sqrt(2)
             A = A + eps * Ap
 
         taps = 1 / np.sqrt(2) * (randn(n_epochs, L) + 1j * randn(n_epochs, L))

@@ -37,6 +37,7 @@ class SystemConfig:
     # --- array calibration error (A = A_D + epsilon * A_P, A_P ~ CN(0,1)) ---
     epsilon: float = 0.0             # 0 -> perfectly calibrated
     smr_db: float = 5.0              # signal-to-multipath ratio [dB] (paper)
+    ap_unit_variance: bool = True    # A_P: True E|x|^2=1 (/sqrt2); False E|x|^2=2
 
     @property
     def chip_period(self) -> float:
