@@ -2,7 +2,7 @@
 #SBATCH --job-name=gnss_delay
 #SBATCH --output=slurm_logs/%x_%a.out
 #SBATCH --error=slurm_logs/%x_%a.err
-#SBATCH --array=0-83          # = number of scenarios - 1 (see: python scenarios.py)
+#SBATCH --array=0-699         # = scenarios - 1; rerun `python scenarios.py` to recount after editing grid.yaml
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
 #SBATCH --time=08:00:00

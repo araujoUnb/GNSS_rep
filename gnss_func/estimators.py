@@ -497,11 +497,10 @@ class RefinedEstimator(DelayEstimator):
         self._obj = getattr(self.base, "_obj", None)
         if self._obj is None:
             self._obj = _DelayObjective(system, n_grid=merged.get("n_grid", 512))
-        # LOCAL refinement window (a refinement polishes a good init; it does not
-        # redo the global search). Default ~0.1 chip: a BO init lands inside it,
-        # but a collapsed LSKRF init lies outside -> refinement cannot rescue it.
-        self.refine_span = (system.cfg.chip_period / 10.0
-                            if refine_span is None else refine_span)
+        # Refinement window. Default = GLOBAL (refine_span=None -> bounds [0,2Tc]),
+        # matching the ORIGINAL paper (unbounded L-BFGS-B from the BO estimate).
+        # Pass an explicit span (e.g. Tc/10) for a LOCAL refinement instead.
+        self.refine_span = refine_span
 
     def estimate(self, rx):
         self.base.estimate(rx)

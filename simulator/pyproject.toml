@@ -1,0 +1,33 @@
+[tool.poetry]
+name = "delay-estimation"
+version = "0.1.0"
+description = ""
+package-mode = false
+authors = ["Diego Aguiar Sousa <diego@gtel.ufc.br>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.14"
+tensorly = "^0.8.1"
+bayesian-optimization = "^1.4.3"
+scipy = "^1.11.2"
+torch = ">=2.0.0, !=2.0.1"
+
+#tensorly = "^0.7.0"
+#torch = "^1.12.1"
+#bayesian-optimization = "1.2.0"
+#scipy = "1.11.2"
+#numpy = "<1.23"
+
+[tool.poetry.group.dev.dependencies]
+yapf = "^0.40.1"
+toml = "^0.10.2"
+notebook = "^6.5.3"
+tornado = "6.1"
+matplotlib = "^3.7.2"
+pandas = "*"
+statsmodels = "^0.14.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

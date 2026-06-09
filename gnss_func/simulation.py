@@ -197,6 +197,11 @@ class ScenarioRunner:
                 "mc_index": j,
                 "config_hash": self.hash,
                 "delta_tau_frac": self.delta_tau_frac,
+                "delta_phi_deg": float(self.cfg.delta_phi_deg),
+                "epsilon": float(getattr(self.cfg, "epsilon", 0.0)),
+                "xi": float(self.estimator_kwargs.get("xi", float("nan"))),
+                "i_max": int(self.estimator_kwargs["i_max"])
+                if "i_max" in self.estimator_kwargs else -1,
                 "cn0_db": self.cn0_db,
                 "estimator": self.estimator_name,
             })

@@ -105,17 +105,18 @@ class GNSSSystem:
         CQ = self.delay_signature(tau_vec)              # (n_qw, L)
         A = array_lin(np.asarray(theta_deg_vec), M)     # (M, L)
 
-        # Array calibration error: A = A_D + epsilon * A_P, A_P ~ CN(0,1).
-        # epsilon = 0 leaves the perfectly-calibrated model untouched.
+        # Array calibration error, ORIGINAL paper model (array_lin_noise):
+        # A = A_D + sqrt(epsilon/2) * exp(j * 2*pi * U),  U ~ Uniform[0,1).
+        # The perturbation is a unit-modulus phasor of magnitude sqrt(eps/2)
+        # (per element power eps/2, scaling as sqrt(eps)), matching the data in
+        # results.dat. epsilon = 0 leaves the perfectly-calibrated model intact.
         eps = getattr(self.cfg, "epsilon", 0.0)
         if eps:
-            # A_P i.i.d. complex Gaussian. ap_unit_variance=True -> E|A_P|^2=1
-            # ((randn+1j randn)/sqrt2); False -> real & imag each unit variance
-            # (E|A_P|^2=2), i.e. no 1/sqrt(2) (sqrt(2)x stronger perturbation).
-            Ap = randn(M, L) + 1j * randn(M, L)
-            if getattr(self.cfg, "ap_unit_variance", True):
-                Ap = Ap / np.sqrt(2)
-            A = A + eps * Ap
+            rand = np.random.rand if rng is None else (
+                lambda *s: rng.random(s)
+            )
+            phase = 2 * np.pi * rand(M, L)
+            A = A + np.sqrt(eps / 2.0) * np.exp(1j * phase)
 
         taps = 1 / np.sqrt(2) * (randn(n_epochs, L) + 1j * randn(n_epochs, L))
         # Signal-to-multipath ratio: attenuate the non-LOS paths so that

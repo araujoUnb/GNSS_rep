@@ -1,0 +1,28 @@
+# Campaign grid for the FAST original simulator (sim_fast.FastDelaySim).
+# Faithful to results.dat: same bayes_opt BO, ESPRIT+LSKRF, sqrt(eps/2) phasor
+# calibration, global L-BFGS-B refine. Each scenario = one cartesian-product
+# point; `python runner_fast.py --list` prints the count (= SLURM array size).
+
+system:
+  n_antennas: 8
+  n_epochs: 30
+  n_correlators: 11
+
+# Sweep axes (mirror the original grid: angle_diff, delay_diff, C_N0, xi, eps).
+# Trim lists to control the campaign size. Dense x-axes + high n_mc give the
+# publication figures (each axis can be sliced for a figure).
+experiment:
+  cn0_db: [38.0, 43.0, 48.0, 53.0, 58.0]          # SNR sweep (Fig 8)
+  angle_diff_deg: [1.0, 2.0, 3.0, 5.0, 10.0, 20.0] # angular separation
+  delay_diff: [0.1, 0.3, 0.5, 0.7, 0.9]            # multipath delay separation
+  epsilon: [0.0, 0.001, 0.003, 0.005, 0.007, 0.009] # calibration error (paper range)
+  xi: [0.1]                                         # BO exploration
+  base_seed: 0
+  n_mc: 1000                                        # many MC for smooth curves
+  checkpoint_every: 25
+
+estimator_params:
+  grid_n: 2048        # fine signature-dictionary resolution for the BO objective
+  bo_engine: bayesopt # BO engine: "bayesopt" (faithful to results.dat) or "botorch" (GPU)
+
+out_root: results_fast

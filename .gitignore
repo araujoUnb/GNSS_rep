@@ -133,3 +133,9 @@ CACODE/*.pkl
 
 # local paper data/analysis (not tracked)
 analysis/
+
+# large MC shelves (e.g. simulator/results.dat ~122MB) + regenerable outputs
+*.dat
+revision_results/
+results_fast/
+simulator/slurm_logs/

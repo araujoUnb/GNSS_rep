@@ -18,11 +18,12 @@ from gnss_func.estimators import ESTIMATORS
 from scenarios import load_grid, build_scenarios
 
 
-def estimator_kwargs(name, grid):
+def estimator_kwargs(name, grid, xi, i_max=None):
     p = grid["estimator_params"]
     if name in ("BO", "BO+Ref"):
-        return {"n_grid": p["n_grid"], "i_max": p["bo_i_max"],
-                "n_init": p["bo_n_init"], "xi": p["bo_xi"]}
+        return {"n_grid": p["n_grid"],
+                "i_max": int(i_max) if i_max is not None else p["bo_i_max"],
+                "n_init": p["bo_n_init"], "xi": float(xi)}
     if name in ("LSKRF", "LSKRF+Ref"):
         return {"n_grid": p["n_grid"]}
     return {}
@@ -48,7 +49,7 @@ def main():
         n_epochs=sysp["n_epochs"],
         n_correlators=sysp.get("n_correlators", 11),
         delay_granularity=sysp["delay_granularity"],
-        cn0_db=sc["cn0_db"], delta_phi_deg=sysp["delta_phi_deg"],
+        cn0_db=sc["cn0_db"], delta_phi_deg=sc["delta_phi_deg"],
         epsilon=sc["epsilon"], smr_db=sysp.get("smr_db", 5.0),
     )
 
@@ -56,7 +57,8 @@ def main():
     runner = ScenarioRunner(
         cfg, delta_tau_frac=sc["delta_tau_frac"], cn0_db=sc["cn0_db"],
         base_seed=sc["base_seed"], estimator_cls=est_cls,
-        estimator_kwargs=estimator_kwargs(sc["estimator"], grid),
+        estimator_kwargs=estimator_kwargs(sc["estimator"], grid, sc["xi"],
+                                          sc.get("i_max")),
         out_root=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "..", grid.get("out_root", "results")),
         label=sc["estimator"],
