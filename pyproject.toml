@@ -15,7 +15,12 @@ dependencies = [
     "scikit-learn",
     "matplotlib",
     "pyyaml",
+    "torch",                          # original simulator backend
+    "bayesian-optimization==1.4.3",   # original BO engine (pinned API)
+    # "botorch",                      # optional: GPU BO prototype (simulator/botorch_bo.py)
 ]
 
+# The working simulator lives in simulator/ and runs via relative imports
+# (not installed as a package); this project just pins the environment.
 [tool.setuptools]
-packages = ["gnss_func", "bayopt"]
+py-modules = []
