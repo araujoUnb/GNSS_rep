@@ -17,6 +17,11 @@ experiment:
   delay_diff: [0.1, 0.3, 0.5, 0.7, 0.9]            # multipath delay separation
   epsilon: [0.0, 0.001, 0.003, 0.005, 0.007, 0.009] # calibration error (paper range)
   xi: [0.1]                                         # BO exploration
+  # Optional extra axes (enable for the corresponding figures; they multiply the
+  # scenario count, so usually run them as a separate small grid at one operating
+  # point rather than crossing them with the full sweep above):
+  #   xi: [0.001, 0.01, 0.1, 1.0]   # xi sensitivity figure
+  #   i_max: [10, 20, 30, 50, 70]   # I_max (BO budget) sensitivity figure
   base_seed: 0
   n_mc: 1000                                        # many MC for smooth curves
   checkpoint_every: 25

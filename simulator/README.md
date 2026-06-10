@@ -38,6 +38,16 @@ sbatch submit_fast.sbatch             # full array on the cluster (set --array)
 Outputs go to `results_fast/<hash>/results.csv` (+ `config.yaml`). Re-running
 resumes; different `bo_engine`/params get different hashes.
 
+Then aggregate into the paper's figure CSVs:
+```bash
+python aggregate_fast.py results_fast --to-paper
+```
+This writes `summary_fast.csv` (one row per scenario, per-method mean/median/
+outlier-rate) and the wide figure CSVs in `figure_csv/` (same columns as
+`paper/plots/data_revision/*.csv`); `--to-paper` copies them into the paper repo.
+Edit the reference operating point (cn0/dphi/dtau/eps/xi) at the top of
+`aggregate_fast.main` to choose the slice each figure shows.
+
 ## Validation vs the original (results.dat)
 `FastDelaySim` reproduces `results.dat` statistics (LSKRF / BO / BO+Ref medians
 and outlier rates) within Monte-Carlo noise — see `validation_vs_original.csv`

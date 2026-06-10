@@ -46,7 +46,12 @@ class FastDelaySim:
     """
 
     def __init__(self, cn0, m=8, k=30, q=11, grid_n=2048, device=None,
-                 bo_engine="bayesopt", objective="exact"):
+                 bo_engine="bayesopt", objective="exact",
+                 bo_n_init=2, bo_n_iter=60):
+        # BO budget (original defaults init_points=2, n_iter=60 -> I_max=62).
+        # Parameterized so the I_max sensitivity figure can sweep bo_n_iter.
+        self.bo_n_init = int(bo_n_init)
+        self.bo_n_iter = int(bo_n_iter)
         # BO/refine objective: "exact" (Qw^H C(tau) per call, faithful to the
         # original genCQw; default) or "interp" (precomputed dictionary, faster
         # but smoother -> fewer BO outliers, less faithful).
@@ -197,7 +202,8 @@ class FastDelaySim:
             bounds_transformer=SequentialDomainReductionTransformer(),
             random_state=1000 + seed)
         util = UtilityFunction(kind="ei", xi=xi)
-        opt.maximize(init_points=2, n_iter=60, acquisition_function=util)
+        opt.maximize(init_points=self.bo_n_init, n_iter=self.bo_n_iter,
+                     acquisition_function=util)
         tau_vec = np.array([opt.max["params"]["tauLos"],
                             opt.max["params"]["tauNLos"]])
         tau_bo = float(np.min(tau_vec))
@@ -233,6 +239,7 @@ class FastDelaySim:
             return LIGHT * abs(tau_real - e)
         return {
             "seed": int(seed), "tau_real": tau_real,
+            "i_max": self.bo_n_init + self.bo_n_iter,
             "lskrf_est": tau_lskrf, "lskrf_ref_est": tau_lskrf_ref,
             "bo_engine": self.bo_engine,
             "bo_est": tau_bo, "bo_ref_est": tau_bo_ref,

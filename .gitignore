@@ -139,3 +139,7 @@ analysis/
 revision_results/
 results_fast/
 simulator/slurm_logs/
+results_fast_test/
+simulator/results_fast/
+simulator/figure_csv/
+simulator/summary_fast.csv

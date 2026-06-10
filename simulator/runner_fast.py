@@ -45,14 +45,17 @@ def load_grid(path=None):
 
 def build_scenarios(grid):
     e = grid["experiment"]
+    # optional I_max axis (total BO budget); None -> use the original default (62)
+    i_max_list = e.get("i_max", [None])
     combos = itertools.product(
         e["cn0_db"], e["angle_diff_deg"], e["delay_diff"],
-        e["epsilon"], e["xi"])
+        e["epsilon"], e["xi"], i_max_list)
     out = []
-    for cn0, adeg, dd, eps, xi in combos:
+    for cn0, adeg, dd, eps, xi, imax in combos:
         out.append({
             "cn0_db": float(cn0), "angle_diff_deg": float(adeg),
             "delay_diff": float(dd), "epsilon": float(eps), "xi": float(xi),
+            "i_max": (None if imax is None else int(imax)),
             "base_seed": int(e["base_seed"]), "n_mc": int(e["n_mc"]),
             "checkpoint_every": int(e["checkpoint_every"]),
         })
@@ -67,9 +70,11 @@ def _hash(cfg):
 def run_scenario(sc, grid, out_root):
     sysp = grid["system"]
     bo_engine = grid["estimator_params"].get("bo_engine", "bayesopt")
+    bo_n_init = 2
+    n_iter = (62 if sc.get("i_max") is None else int(sc["i_max"])) - bo_n_init
     config = {"system": sysp, "scenario": {k: sc[k] for k in
               ("cn0_db", "angle_diff_deg", "delay_diff", "epsilon", "xi",
-               "base_seed")},
+               "i_max", "base_seed")},
               "bo_engine": bo_engine,
               "seed_rule": "seed = base_seed + mc_index"}
     h = _hash(config)
@@ -91,7 +96,8 @@ def run_scenario(sc, grid, out_root):
     sim = FastDelaySim(sc["cn0_db"], m=sysp["n_antennas"],
                        k=sysp["n_epochs"], q=sysp["n_correlators"],
                        grid_n=grid["estimator_params"]["grid_n"],
-                       bo_engine=bo_engine)
+                       bo_engine=bo_engine,
+                       bo_n_init=bo_n_init, bo_n_iter=n_iter)
     print(f"[{h}] device={getattr(sim, 'device', 'cpu')} "
           f"n_mc={sc['n_mc']} (resume {len(done)} done)", flush=True)
 
