@@ -46,7 +46,12 @@ class FastDelaySim:
     """
 
     def __init__(self, cn0, m=8, k=30, q=11, grid_n=2048, device=None,
-                 bo_engine="bayesopt"):
+                 bo_engine="bayesopt", objective="exact"):
+        # BO/refine objective: "exact" (Qw^H C(tau) per call, faithful to the
+        # original genCQw; default) or "interp" (precomputed dictionary, faster
+        # but smoother -> fewer BO outliers, less faithful).
+        assert objective in ("exact", "interp"), objective
+        self.objective = objective
         # Which Bayesian-optimization engine the BO/BO+Ref stage uses:
         #   "bayesopt" -> original bayes_opt library (faithful to results.dat)
         #   "botorch"  -> BoTorch GP+EI (GPU-capable; validate vs bayes_opt first)
@@ -121,11 +126,13 @@ class FastDelaySim:
         """signalModel3 forward, reusing the precomputed Qw. Returns Y, OMEGA,
         factors, tau_real, and the FBA+SPS matrix E for ESPRIT (as in simulation)."""
         m, k, q = self.m, self.k, self.q
-        phi = th.tensor([doa_deg, doa_deg + angle_diff_deg])
-        A = D.array_lin_noise(phi, m, epsilon)
-
+        # Draw order MUST match the original signalModel3 for seed-by-seed
+        # reproducibility: phases (rand 2) -> A's eps phasor (rand m x L) -> tau0.
         phases = th.exp(1j * 2 * np.pi * th.rand(2))
         Gamma = th.outer(self.abs_gamma * phases, th.ones(k))
+
+        phi = th.tensor([doa_deg, doa_deg + angle_diff_deg])
+        A = D.array_lin_noise(phi, m, epsilon)
 
         tau0 = self.Tc * 0.3 / 0.5 * (th.rand(1) - 0.5)
         tauL = tau0 + self.Tc * delay_diff
@@ -163,11 +170,20 @@ class FastDelaySim:
         return re + 1j * im                                 # (q,)
 
     def _black_box(self, Y2, tauLos, tauNLos):
-        """Same mode-2 LS residual as original ``black_box_LS`` (interpolated)."""
+        """Mode-2 LS residual, same as the original ``black_box_LS``.
+
+        objective='exact' builds CQw = Qw^H C(tau) exactly per call (matches the
+        original genCQw, only skipping the redundant per-call SVD of Q);
+        objective='interp' uses the precomputed dictionary (faster, slightly
+        smoother -> fewer BO outliers, so less faithful)."""
         if tauLos > tauNLos:
             return -1.0
-        CQw = np.stack([self._interp_CQw(tauLos),
-                        self._interp_CQw(tauNLos)], axis=1)  # (q, 2)
+        if self.objective == "exact":
+            C = self._build_C(th.tensor([tauLos, tauNLos], dtype=th.float32))
+            CQw = (self.QwH @ C).numpy()                     # (q, 2)
+        else:
+            CQw = np.stack([self._interp_CQw(tauLos),
+                            self._interp_CQw(tauNLos)], axis=1)
         M = np.linalg.pinv(CQw) @ Y2
         return -(np.linalg.norm(Y2 - CQw @ M) / np.linalg.norm(Y2)) ** 2
 
