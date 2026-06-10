@@ -5,7 +5,7 @@
 # Each array task runs ONE scenario's full Monte-Carlo (resumable).
 #SBATCH --output=slurm_logs/%x_%a.out
 #SBATCH --error=slurm_logs/%x_%a.err
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
 #SBATCH --time=24:00:00
 

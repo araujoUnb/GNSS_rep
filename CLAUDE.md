@@ -34,10 +34,22 @@ operating point): `eps, dphi, snr, dtau, imax, xi` (+ `smoke` for testing).
 cd simulator
 DRYRUN=1 ./submit_all.sh smoke     # 1) print the sbatch command, submit nothing
 ./submit_all.sh smoke              # 2) submit the tiny smoke array; confirm it finishes
-./submit_all.sh                    # 3) submit ALL analyses (or: ./submit_all.sh eps snr)
 ```
-- One array job per analysis, **named `gnss_<analysis>`** → `squeue -u $USER`
-  (or `sacct`) tells you which analysis is running/finished.
+Then launch the real campaign. **This node has 32 threads; use AT MOST 28.** Each
+task uses 1 thread (`cpus-per-task=1`; the bayes_opt GP is single-threaded), so
+"28 threads" = "28 concurrent tasks". Two ways:
+```bash
+# (recommended) ALL campaigns as ONE array, hard global cap of 28 concurrent:
+./submit_capped.sh                 # -> sbatch --array=0-30%28  (job gnss_campaign)
+#   MAXP=24 ./submit_capped.sh     # use a different cap
+# (alternative) one array job PER analysis (easier per-figure tracking, but the
+#   six arrays together can reach ~30 concurrent -> may briefly exceed 28):
+./submit_all.sh                    # or a subset: ./submit_all.sh eps snr
+```
+- `submit_capped.sh` keeps total concurrency <= 28 (leaves >=4 threads free).
+- Job names: `gnss_campaign` (capped) or `gnss_<analysis>` (per-analysis) →
+  `squeue -u $USER` / `sacct` shows progress; per-analysis output dirs show which
+  finished regardless of which submit you used.
 - **Resumable & idempotent:** re-run `./submit_all.sh <name>` any time; each task
   skips already-done `mc_index` (results flush every 10 MC). Safe after timeouts.
 - Cost: ~4–7 s per Monte-Carlo iteration × `n_mc` (1000) per scenario. Each

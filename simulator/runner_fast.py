@@ -23,6 +23,7 @@ Set the grid with GNSS_FAST_GRID=campaigns/<analysis>.yaml (default grid_fast.ya
 
 import os
 import sys
+import glob
 import json
 import time
 import hashlib
@@ -60,6 +61,21 @@ def build_scenarios(grid):
             "i_max": (None if imax is None else int(imax)),
         })
     return out
+
+
+def all_campaigns(exclude=("smoke",)):
+    """Flatten every campaigns/*.yaml into one ordered list of (grid, scenario),
+    so a SINGLE SLURM array (with %MAXP) can run the whole study under a global
+    concurrency cap. 'smoke' is excluded."""
+    flat = []
+    for gp in sorted(glob.glob(os.path.join(HERE, "campaigns", "*.yaml"))):
+        name = os.path.splitext(os.path.basename(gp))[0]
+        if name in exclude:
+            continue
+        grid = load_grid(gp)
+        for sc in build_scenarios(grid):
+            flat.append((grid, sc))
+    return flat
 
 
 def scenario_params(sc, grid):
@@ -145,6 +161,33 @@ def run_scenario(sc, grid, out_root):
 
 
 def main():
+    # Combined mode: GNSS_FAST_ALL=1 runs ALL campaigns as one flat index space
+    # (one SLURM array with %MAXP for a global concurrency cap).
+    if os.environ.get("GNSS_FAST_ALL") == "1":
+        flat = all_campaigns()
+        if "--count" in sys.argv:
+            print(len(flat))
+            return
+        if "--list" in sys.argv:
+            print(f"[ALL] {len(flat)} scenarios (array 0-{len(flat)-1})")
+            for i, (g, s) in enumerate(flat):
+                print(i, g["name"], {k: s[k] for k in
+                      ("cn0_db", "angle_diff_deg", "delay_diff",
+                       "epsilon", "xi", "i_max")})
+            return
+        idx = (int(sys.argv[1]) if len(sys.argv) > 1
+               and not sys.argv[1].startswith("-")
+               else int(os.environ.get("SLURM_ARRAY_TASK_ID", "0")))
+        if not (0 <= idx < len(flat)):
+            raise SystemExit(f"index {idx} out of range 0..{len(flat)-1}")
+        grid, sc = flat[idx]
+        out_root = os.path.join(HERE, grid.get("out_root", "results_fast"))
+        t = time.perf_counter()
+        run_scenario(sc, grid, out_root)
+        print(f"[ALL {grid['name']} scenario {idx}] "
+              f"wall {time.perf_counter()-t:.1f}s", flush=True)
+        return
+
     grid = load_grid()
     scs = build_scenarios(grid)
     if "--count" in sys.argv:
