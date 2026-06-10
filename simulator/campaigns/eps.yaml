@@ -1,0 +1,13 @@
+name: eps
+system: {n_antennas: 8, n_epochs: 30, n_correlators: 11}
+experiment:
+  cn0_db: [48.0]
+  angle_diff_deg: [5.0]
+  delay_diff: [0.5]
+  epsilon: [0.0, 0.001, 0.003, 0.005, 0.007, 0.009]
+  xi: [0.1]
+  base_seed: 0
+  n_mc: 1000
+  checkpoint_every: 10
+estimator_params: {grid_n: 2048, objective: exact, bo_engine: bayesopt}
+out_root: results_fast

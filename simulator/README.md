@@ -28,15 +28,33 @@ campaigns on SLURM.
 - `grid_fast.yaml` — the campaign grid (cn0, angle_diff, delay_diff, epsilon, xi).
 - `submit_fast.sbatch` — SLURM array launcher.
 
-## Run a campaign
+## Run a campaign (one SLURM array job per analysis)
+Each analysis is a grid in `campaigns/<name>.yaml` (one varying axis at a
+reference operating point): `eps, dphi, snr, dtau, imax, xi` (+ `smoke` for
+testing). `submit_all.sh` submits ONE array job per analysis, named
+`gnss_<analysis>`, so `squeue -u $USER` immediately shows which analysis is
+running/finished.
+
 ```bash
 cd simulator
-python runner_fast.py --list          # scenario count (= SLURM array size)
-python runner_fast.py 0               # run one scenario locally
-sbatch submit_fast.sbatch             # full array on the cluster (set --array)
+# smoke test first (tiny, 2 scenarios x 2 MC):
+DRYRUN=1 ./submit_all.sh smoke      # print the sbatch command, submit nothing
+./submit_all.sh smoke               # actually submit the smoke array
+# full campaign (all analyses) or a subset:
+./submit_all.sh                     # every campaigns/*.yaml
+./submit_all.sh eps snr             # only these analyses
 ```
-Outputs go to `results_fast/<hash>/results.csv` (+ `config.yaml`). Re-running
-resumes; different `bo_engine`/params get different hashes.
+Run one scenario locally (what each array task does):
+```bash
+GNSS_FAST_GRID=campaigns/eps.yaml python runner_fast.py 0
+GNSS_FAST_GRID=campaigns/eps.yaml python runner_fast.py --list
+```
+Outputs: `results_fast/<analysis>/<hash>.csv` plus an identically-named
+`<hash>.yaml` holding ALL simulation parameters (system + scenario + estimator +
+base_seed). The hash excludes `n_mc`, so you can extend `n_mc` and RESUME (each
+task skips already-done `mc_index`; results flush every `checkpoint_every`=10).
+Then aggregate (below). The cluster needs `../.venv` with the deps
+(`pip install -e ..` or install torch + bayesian-optimization==1.4.3).
 
 Then aggregate into the paper's figure CSVs:
 ```bash

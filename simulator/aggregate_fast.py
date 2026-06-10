@@ -35,18 +35,21 @@ PFX = {"lskrf": "lskrf", "lskrf_ref": "lskrfref", "bo": "bo", "bo_ref": "boref"}
 
 def summarize(results_dir):
     rows = []
-    for cfgp in glob.glob(os.path.join(results_dir, "*", "config.yaml")):
-        csvp = os.path.join(os.path.dirname(cfgp), "results.csv")
+    # new layout: results_fast/<analysis>/<hash>.yaml + <hash>.csv
+    for cfgp in glob.glob(os.path.join(results_dir, "*", "*.yaml")):
+        csvp = cfgp[:-5] + ".csv"
         if not os.path.exists(csvp):
             continue
         with open(cfgp) as f:
             cfg = yaml.safe_load(f)
         df = pd.read_csv(csvp)
         sc = cfg.get("scenario", {})
-        row = {"config_hash": cfg.get("config_hash"), "n_mc": len(df),
+        row = {"analysis": cfg.get("analysis"),
+               "config_hash": cfg.get("config_hash"), "n_mc": len(df),
                "cn0_db": sc.get("cn0_db"), "angle_diff_deg": sc.get("angle_diff_deg"),
                "delay_diff": sc.get("delay_diff"), "epsilon": sc.get("epsilon"),
-               "xi": sc.get("xi"), "bo_engine": cfg.get("bo_engine")}
+               "xi": sc.get("xi"),
+               "bo_engine": cfg.get("estimator", {}).get("bo_engine")}
         row["snr_post_db"] = round(row["cn0_db"] + SNR_OFFSET, 2)
         if "i_max" in df.columns:
             row["i_max"] = int(df["i_max"].iloc[0])
