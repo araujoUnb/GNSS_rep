@@ -55,8 +55,15 @@ def summarize(results_dir):
             row["i_max"] = int(df["i_max"].iloc[0])
         for m, col in METHODS.items():
             e = df[col].values
+            ein = e[e <= THR]                     # runs surviving the outlier screen
             row[f"{m}_mean"] = float(np.mean(e))
             row[f"{m}_median"] = float(np.median(e))
+            row[f"{m}_rmse"] = float(np.sqrt(np.mean(e ** 2)))
+            # RMSE over the non-outlier runs only. Each method is screened at the
+            # same THR but keeps a different number of runs, so this statistic is
+            # only interpretable together with the outlier rate below.
+            row[f"{m}_rmsein"] = (float(np.sqrt(np.mean(ein ** 2)))
+                                  if ein.size else np.nan)
             row[f"{m}_out"] = float(np.mean(e > THR))
         rows.append(row)
     return pd.DataFrame(rows).sort_values(
@@ -72,20 +79,28 @@ def _slice(s, fixed):
     return sub
 
 
-def figure_csv(summary, x, fixed, out, stat="mean", also_out=True):
-    """Wide CSV: x-axis + per-method <pfx>_<stat> (+ <pfx>_out). Column names
-    match the pgfplots files (lskrf_mean, lskrfref_mean, bo_mean, boref_mean,...)."""
-    sub = _slice(summary, fixed).sort_values(x)
+def figure_csv(summary, analysis, x, out, stat="mean", also_out=True):
+    """Wide CSV for ONE analysis (each campaign sweeps a single axis at a fixed
+    operating point, so we slice by the analysis name -- no cross-analysis
+    contamination). x-axis + per-method mean/median (+ outlier rate). Column
+    names match the pgfplots (lskrf_mean, lskrfref_mean, bo_mean, boref_mean,...)."""
+    sub = summary[summary["analysis"] == analysis].sort_values(x)
     if sub.empty:
-        print(f"  [skip] {os.path.basename(out)}: no rows for {fixed}")
+        print(f"  [skip] {os.path.basename(out)}: no rows for analysis={analysis}")
         return False
     cols = {x: sub[x].values}
     for m in ["lskrf", "lskrf_ref", "bo", "bo_ref"]:
         cols[f"{PFX[m]}_{stat}"] = sub[f"{m}_{stat}"].values
+        cols[f"{PFX[m]}_mean"] = sub[f"{m}_mean"].values
+        cols[f"{PFX[m]}_median"] = sub[f"{m}_median"].values
+        # RMSE is the statistic the CRLB bounds, so every figure CSV carries it,
+        # together with the RMSE restricted to the non-outlier runs
+        cols[f"{PFX[m]}_rmse"] = sub[f"{m}_rmse"].values
+        cols[f"{PFX[m]}_rmsein"] = sub[f"{m}_rmsein"].values
         if also_out:
             cols[f"{PFX[m]}_out"] = sub[f"{m}_out"].values
     pd.DataFrame(cols).to_csv(out, index=False)
-    print(f"  wrote {os.path.basename(out)} ({len(sub)} pts, fixed={fixed})")
+    print(f"  wrote {os.path.basename(out)} ({len(sub)} pts, analysis={analysis})")
     return True
 
 
@@ -102,47 +117,17 @@ def main():
     summary.to_csv(sumpath, index=False)
     print(f"wrote {sumpath} ({len(summary)} scenarios)")
 
-    # Reference operating point for the slices (edit to taste / after the campaign).
-    cn0_ref = 48.0
-    dphi_ref = float(summary["angle_diff_deg"].mode().iloc[0])
-    dtau_ref = 0.5 if (np.isclose(summary["delay_diff"], 0.5)).any() else \
-        float(summary["delay_diff"].mode().iloc[0])
-    eps_ref = 0.005 if (np.isclose(summary["epsilon"], 0.005)).any() else \
-        float(summary["epsilon"].mode().iloc[0])
-    xi_ref = float(summary["xi"].mode().iloc[0])
-
     outdir = os.path.join(HERE, "figure_csv")
     os.makedirs(outdir, exist_ok=True)
-    print(f"slicing at cn0={cn0_ref}, dphi={dphi_ref}, dtau={dtau_ref}, "
-          f"eps={eps_ref}, xi={xi_ref}")
 
-    # epsilon sweep (LSKRF / LSKRF+Ref / BO / BO+Ref)
-    figure_csv(summary, "epsilon",
-               {"cn0_db": cn0_ref, "angle_diff_deg": dphi_ref,
-                "delay_diff": dtau_ref, "xi": xi_ref},
-               os.path.join(outdir, "R1C4_lskrfref.csv"))
-    # angular-separation sweep (operating point where LSKRF fails)
-    figure_csv(summary, "angle_diff_deg",
-               {"cn0_db": cn0_ref, "delay_diff": dtau_ref,
-                "epsilon": eps_ref, "xi": xi_ref},
-               os.path.join(outdir, "R1C4_dphi.csv"))
-    # SNR sweep
-    figure_csv(summary, "snr_post_db",
-               {"angle_diff_deg": dphi_ref, "delay_diff": dtau_ref,
-                "epsilon": eps_ref, "xi": xi_ref},
-               os.path.join(outdir, "R4C5_snr.csv"))
-    # I_max sweep (only if the campaign swept i_max)
-    if "i_max" in summary.columns:
-        figure_csv(summary, "i_max",
-                   {"cn0_db": cn0_ref, "angle_diff_deg": dphi_ref,
-                    "delay_diff": dtau_ref, "epsilon": eps_ref, "xi": xi_ref},
-                   os.path.join(outdir, "R1C3_imax.csv"))
-    # xi sweep (median), only if more than one xi
-    if summary["xi"].nunique() > 1:
-        figure_csv(summary, "xi",
-                   {"cn0_db": cn0_ref, "angle_diff_deg": dphi_ref,
-                    "delay_diff": dtau_ref, "epsilon": eps_ref},
-                   os.path.join(outdir, "R1C5_xi.csv"), stat="median")
+    # one figure per analysis (campaign); each varies a single axis
+    figure_csv(summary, "eps",  "epsilon",        os.path.join(outdir, "R1C4_lskrfref.csv"))
+    figure_csv(summary, "dphi", "angle_diff_deg", os.path.join(outdir, "R1C4_dphi.csv"))
+    figure_csv(summary, "snr",  "cn0_db",         os.path.join(outdir, "R4C5_snr.csv"))
+    figure_csv(summary, "imax", "i_max",          os.path.join(outdir, "R1C3_imax.csv"))
+    figure_csv(summary, "dtau", "delay_diff",     os.path.join(outdir, "R1C4_dtau.csv"))
+    figure_csv(summary, "xi",   "xi",             os.path.join(outdir, "R1C5_xi.csv"),
+               stat="median")
 
     if to_paper:
         dest = os.path.normpath(os.path.join(
